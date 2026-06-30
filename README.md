@@ -1,4 +1,4 @@
-# squadron-plugin-localdev
+# squadron-dev
 
 A [Squadron](https://docs.squadron.sh) plugin that performs **local software
 development**. It clones GitHub repositories to your local filesystem and drives a
@@ -164,8 +164,8 @@ review returns its result without posting.
 ## Build
 
 ```bash
-git clone https://github.com/ericlakich/squadron-plugin-localdev.git
-cd squadron-plugin-localdev
+git clone https://github.com/ericlakich/squadron-dev.git
+cd squadron-dev
 
 go mod tidy
 go test ./...
@@ -190,7 +190,7 @@ the project and use `version = "local"` so Squadron rebuilds on config load:
 
 ```hcl
 plugin "localdev" {
-  source  = "./squadron-plugin-localdev"
+  source  = "./squadron-dev"
   version = "local"
 
   settings {
@@ -345,7 +345,7 @@ all phases are provider-agnostic.
 ## Project structure
 
 ```
-squadron-plugin-localdev/
+squadron-dev/
   main.go             # Entry point: squadron.Serve(&Plugin{}); registers providers
   plugin.go           # ToolProvider impl: tool schemas, Configure, Call dispatch
   config.go           # Settings parsing (credentials come from env, not settings)
@@ -397,8 +397,8 @@ ref==current-branch case, commit, push, and diff).
 
 Tag-published releases build cross-platform binaries (darwin/linux/windows ×
 amd64/arm64), generate `checksums.txt`, and upload assets named
-`squadron-plugin-localdev_<os>_<arch>.<ext>` — the layout Squadron expects to resolve
-a plugin from `source = "github.com/ericlakich/squadron-plugin-localdev"` +
+`squadron-dev_<os>_<arch>.<ext>` — the layout Squadron expects to resolve
+a plugin from `source = "github.com/ericlakich/squadron-dev"` +
 `version = "vX.Y.Z"`. See [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
 ```bash

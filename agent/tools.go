@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ericlakich/squadron-plugin-localdev/provider"
-	"github.com/ericlakich/squadron-plugin-localdev/workspace"
+	"github.com/ericlakich/squadron-dev/provider"
+	"github.com/ericlakich/squadron-dev/workspace"
 )
 
 // Tool is a local capability the model may invoke during the agent loop. Each

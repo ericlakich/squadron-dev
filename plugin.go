@@ -8,8 +8,8 @@ import (
 
 	squadron "github.com/mlund01/squadron-sdk"
 
-	"github.com/ericlakich/squadron-plugin-localdev/provider"
-	"github.com/ericlakich/squadron-plugin-localdev/vcs"
+	"github.com/ericlakich/squadron-dev/provider"
+	"github.com/ericlakich/squadron-dev/vcs"
 )
 
 // tools defines the metadata for every tool the plugin exposes to Squadron. The

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ericlakich/squadron-plugin-localdev/workspace"
+	"github.com/ericlakich/squadron-dev/workspace"
 )
 
 // TestWorkspaceToolSchemasAreValidJSON guards the hand-written InputSchema

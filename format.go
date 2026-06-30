@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ericlakich/squadron-plugin-localdev/agent"
+	"github.com/ericlakich/squadron-dev/agent"
 )
 
 // formatDevelop renders the result of the Code Development phase.

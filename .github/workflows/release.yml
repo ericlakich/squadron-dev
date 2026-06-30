@@ -11,7 +11,7 @@ env:
   # REPO must match the GitHub repo name — Squadron builds the asset filename
   # as "<repo>_<goos>_<goarch>.<ext>" and looks that name up inside
   # checksums.txt. See squadron/internal/release/download.go:ArchiveURLs.
-  REPO: squadron-plugin-localdev
+  REPO: squadron-dev
 
   # Path to the package whose main() registers the plugin. This plugin's
   # entrypoint is at the module root.

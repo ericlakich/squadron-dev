@@ -1,4 +1,4 @@
-module github.com/ericlakich/squadron-plugin-localdev
+module github.com/ericlakich/squadron-dev
 
 go 1.26.1
 

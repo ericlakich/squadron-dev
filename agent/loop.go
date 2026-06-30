@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ericlakich/squadron-plugin-localdev/provider"
+	"github.com/ericlakich/squadron-dev/provider"
 )
 
 // Options configures a single agent run.

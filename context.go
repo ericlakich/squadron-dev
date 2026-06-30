@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ericlakich/squadron-plugin-localdev/workspace"
+	"github.com/ericlakich/squadron-dev/workspace"
 )
 
 // defaultContextFiles are the repository instruction/convention files the agent

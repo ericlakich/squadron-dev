@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/ericlakich/squadron-plugin-localdev/provider"
+	"github.com/ericlakich/squadron-dev/provider"
 )
 
 // fakeProvider returns a scripted sequence of responses, one per Converse call,

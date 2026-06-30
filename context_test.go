@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ericlakich/squadron-plugin-localdev/workspace"
+	"github.com/ericlakich/squadron-dev/workspace"
 )
 
 func TestGatherRepoContext(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
-	"github.com/ericlakich/squadron-plugin-localdev/provider"
+	"github.com/ericlakich/squadron-dev/provider"
 )
 
 func TestProviderRegistered(t *testing.T) {

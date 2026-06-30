@@ -2,8 +2,7 @@
 plugin
 plugin.exe
 # Bare `go build` in the module root names the binary after the module path's
-# last element; ignore it and the directory-named variant.
-squadron-plugin-localdev
+# last element (the repo / directory name).
 squadron-dev
 *.exe
 *.dll

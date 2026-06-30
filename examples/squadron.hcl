@@ -24,7 +24,7 @@ model "anthropic" {
 # (2) The LocalDev plugin. Build it locally (see the README) and point `source`
 # at the build output, or reference a published release by source + version.
 plugin "localdev" {
-  source  = "./squadron-plugin-localdev"
+  source  = "./squadron-dev"
   version = "local"
 
   settings {
@@ -75,19 +75,19 @@ agent "engineer" {
 # agent can load. The skill markdown files live in this plugin's skills/ folder.
 skill "localdev_develop" {
   description  = "Load when implementing a code change on a repository and opening a PR"
-  instructions = load("./squadron-plugin-localdev/skills/localdev_code.md")
+  instructions = load("./squadron-dev/skills/localdev_code.md")
   tools        = [plugins.localdev.code_develop, plugins.localdev.workspace_status]
 }
 
 skill "localdev_qa" {
   description  = "Load when QAing a pull request or branch"
-  instructions = load("./squadron-plugin-localdev/skills/localdev_qa.md")
+  instructions = load("./squadron-dev/skills/localdev_qa.md")
   tools        = [plugins.localdev.code_qa]
 }
 
 skill "localdev_review" {
   description  = "Load when reviewing a pull request or branch"
-  instructions = load("./squadron-plugin-localdev/skills/localdev_review.md")
+  instructions = load("./squadron-dev/skills/localdev_review.md")
   tools        = [plugins.localdev.code_review]
 }
 

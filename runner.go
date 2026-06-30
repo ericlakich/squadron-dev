@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ericlakich/squadron-plugin-localdev/agent"
-	"github.com/ericlakich/squadron-plugin-localdev/vcs"
-	"github.com/ericlakich/squadron-plugin-localdev/workspace"
+	"github.com/ericlakich/squadron-dev/agent"
+	"github.com/ericlakich/squadron-dev/vcs"
+	"github.com/ericlakich/squadron-dev/workspace"
 )
 
 // maxDiffBytes caps the diff embedded into a review directive so a very large PR

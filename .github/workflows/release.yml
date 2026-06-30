@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write   # needed to upload assets to the release
+
+env:
+  # REPO must match the GitHub repo name — Squadron builds the asset filename
+  # as "<repo>_<goos>_<goarch>.<ext>" and looks that name up inside
+  # checksums.txt. See squadron/internal/release/download.go:ArchiveURLs.
+  REPO: squadron-plugin-localdev
+
+  # Path to the package whose main() registers the plugin. This plugin's
+  # entrypoint is at the module root.
+  MAIN_PKG: .
+
+  GO_VERSION: "1.23"
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build and package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GOOS" == "windows" ]]; then
+            BIN="plugin.exe"
+            EXT="zip"
+          else
+            BIN="plugin"
+            EXT="tar.gz"
+          fi
+
+          ARCHIVE="${REPO}_${GOOS}_${GOARCH}.${EXT}"
+          STAGE="$(mktemp -d)"
+          mkdir -p dist
+
+          # Fallback to module root if the configured entrypoint doesn't exist.
+          PKG="$MAIN_PKG"
+          [[ -d "$PKG" ]] || PKG="."
+
+          echo ">> building $GOOS/$GOARCH -> $ARCHIVE"
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "$STAGE/$BIN" \
+            "$PKG"
+
+          if [[ "$EXT" == "zip" ]]; then
+            (cd "$STAGE" && zip -q "$GITHUB_WORKSPACE/dist/$ARCHIVE" "$BIN")
+          else
+            tar -C "$STAGE" -czf "dist/$ARCHIVE" "$BIN"
+          fi
+
+          ls -lh "dist/$ARCHIVE"
+
+      - name: Upload archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: publish release assets
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download all archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: archive-*
+          merge-multiple: true
+
+      - name: Generate checksums.txt
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # Format must be "<sha256>  <filename>" (two whitespace-separated
+          # fields, filename basename only). See squadron/internal/release/
+          # download.go:FetchChecksum.
+          sha256sum ./*.tar.gz ./*.zip 2>/dev/null \
+            | sed 's| \./| |' \
+            > checksums.txt
+          echo "---- checksums.txt ----"
+          cat checksums.txt
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # --clobber lets the workflow be re-run against an existing release
+          # without failing on duplicate asset names.
+          gh release upload "$TAG" ./* --clobber --repo "$GITHUB_REPOSITORY"

@@ -1,0 +1,38 @@
+# Compiled plugin binary
+plugin
+plugin.exe
+# Bare `go build` in the module root names the binary after the module path's
+# last element; ignore it and the directory-named variant.
+squadron-plugin-localdev
+squadron-dev
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build output
+/dist/
+
+# Local development workspaces created by the plugin at runtime
+/.localdev-workspaces/
+
+# Go
+*.test
+*.out
+
+# Local environment / secrets — never commit credentials
+.env
+.env.local
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

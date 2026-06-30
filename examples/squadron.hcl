@@ -21,11 +21,13 @@ model "anthropic" {
   api_key  = vars.anthropic_api_key
 }
 
-# (2) The LocalDev plugin. Build it locally (see the README) and point `source`
-# at the build output, or reference a published release by source + version.
+# (2) The LocalDev plugin, installed from a published GitHub release (recommended):
+# Squadron downloads, checksum-verifies, and caches the prebuilt binary — no local
+# build. For local plugin development instead, use a checkout path and "local":
+#     source = "./squadron-dev"   version = "local"
 plugin "localdev" {
-  source  = "./squadron-dev"
-  version = "local"
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
 
   settings {
     # Provider selection (Bedrock is the default and currently only provider).
@@ -71,23 +73,26 @@ agent "engineer" {
   ]
 }
 
-# Optional: package the phase guidance shipped with the plugin as skills the
-# agent can load. The skill markdown files live in this plugin's skills/ folder.
+# Optional skills. Squadron skills are authored in your config (plugins ship tools,
+# not skills), and `load()` reads local files. The plugin repo's skills/*.md are
+# provided to use here: copy them next to this config as ./skills/, or inline the
+# instructions. Skills are optional — the plugin's tool descriptions already guide
+# usage, so you can delete these blocks and rely on `tools = [...]` alone.
 skill "localdev_develop" {
   description  = "Load when implementing a code change on a repository and opening a PR"
-  instructions = load("./squadron-dev/skills/localdev_code.md")
+  instructions = load("./skills/localdev_code.md")
   tools        = [plugins.localdev.code_develop, plugins.localdev.workspace_status]
 }
 
 skill "localdev_qa" {
   description  = "Load when QAing a pull request or branch"
-  instructions = load("./squadron-dev/skills/localdev_qa.md")
+  instructions = load("./skills/localdev_qa.md")
   tools        = [plugins.localdev.code_qa]
 }
 
 skill "localdev_review" {
   description  = "Load when reviewing a pull request or branch"
-  instructions = load("./squadron-dev/skills/localdev_review.md")
+  instructions = load("./skills/localdev_review.md")
   tools        = [plugins.localdev.code_review]
 }
 

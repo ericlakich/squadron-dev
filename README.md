@@ -118,13 +118,18 @@ Delete a session's local workspace directory to reclaim disk space.
 
 ## Prerequisites
 
-- **Go 1.23+** to build the plugin.
-- **`git`** on `PATH` (used for clone/branch/commit/push).
+**To use the plugin** (install from a release):
+
+- **[Squadron](https://docs.squadron.sh)** installed.
+- **`git`** on `PATH` (used to clone repos and manage branches locally).
 - **AWS Bedrock access** in your account, with the target model/inference profile
   enabled in your region, and credentials available via the standard AWS credential
   chain (env vars, shared profile, SSO, or an IAM role).
 - **A GitHub token** in the environment (`GITHUB_TOKEN` or `GH_TOKEN`) to clone
   private repos, push branches, and open PRs / post reviews.
+
+**To build from source** (contributing): **Go 1.23+**. You do *not* need Go to use a
+released version — Squadron downloads the prebuilt binary for your platform.
 
 ---
 
@@ -161,22 +166,48 @@ review returns its result without posting.
 
 ---
 
-## Build
+## Installation
+
+Install the plugin straight from its GitHub releases by referencing it by **module
+path and version** in your Squadron config. On first use Squadron downloads the
+prebuilt binary for your platform, verifies it against the release's `checksums.txt`,
+and caches it — there is no local build step.
+
+```hcl
+plugin "localdev" {
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"   # a published release tag
+}
+```
+
+Verify the install and list the plugin's tools:
+
+```bash
+squadron plugin tools localdev -v v0.1.0
+```
+
+`version` must be a published release tag (see [Releasing](#releasing) for how tags
+become installable releases). Use the newest tag from the repository's releases.
+
+### Building from source (contributors)
+
+You only need this to develop the plugin itself. Point `source` at a local checkout
+and use `version = "local"` so Squadron rebuilds it on config load:
+
+```hcl
+plugin "localdev" {
+  source  = "./squadron-dev"   # path to your checkout, relative to the HCL file
+  version = "local"
+}
+```
+
+Or build and install the binary manually:
 
 ```bash
 git clone https://github.com/ericlakich/squadron-dev.git
 cd squadron-dev
-
-go mod tidy
 go test ./...
 go build -o plugin .
-```
-
-For Squadron local development, place the binary where Squadron expects it, or point
-the HCL `source` at the project directory and let Squadron auto-build (see below).
-
-```bash
-# Manual install into Squadron's local plugin directory:
 mkdir -p ~/.squadron/plugins/localdev/local
 cp plugin ~/.squadron/plugins/localdev/local/plugin
 ```
@@ -185,13 +216,12 @@ cp plugin ~/.squadron/plugins/localdev/local/plugin
 
 ## Configuration
 
-Add the plugin to your Squadron HCL config. For local development, point `source` at
-the project and use `version = "local"` so Squadron rebuilds on config load:
+Configure the plugin with a `settings` block. A typical setup:
 
 ```hcl
 plugin "localdev" {
-  source  = "./squadron-dev"
-  version = "local"
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
 
   settings {
     provider    = "bedrock"
@@ -211,6 +241,9 @@ plugin "localdev" {
 }
 ```
 
+> For local plugin development, swap `source`/`version` for the local form shown in
+> [Installation](#installation) above — the `settings` block is identical.
+
 Attach the tools to an agent:
 
 ```hcl
@@ -227,7 +260,8 @@ agent "engineer" {
 }
 ```
 
-A complete develop → QA → review mission is in [`examples/squadron.hcl`](examples/squadron.hcl).
+The settings are detailed below, and several ready-to-adapt configs follow in
+[Configuration examples](#configuration-examples).
 
 ### Settings reference
 
@@ -255,6 +289,97 @@ A complete develop → QA → review mission is in [`examples/squadron.hcl`](exa
 
 > Credentials (`AWS_*`, `GITHUB_TOKEN`) are intentionally **not** settings — see
 > [Credentials and security](#credentials-and-security).
+
+### Configuration examples
+
+**Minimal** — rely on the defaults (full clone, all three phases, full repo
+context) and grant the agent every tool with the `.all` wildcard:
+
+```hcl
+model "anthropic" {
+  provider = "anthropic"
+  api_key  = vars.anthropic_api_key
+}
+
+plugin "localdev" {
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
+  settings {
+    provider   = "bedrock"
+    aws_region = "us-east-1"
+  }
+}
+
+agent "engineer" {
+  model = models.anthropic.claude_sonnet_4
+  tools = [plugins.localdev.all]
+}
+```
+
+**Develop-only agent** — implements changes and opens PRs; no QA/review tools:
+
+```hcl
+agent "implementer" {
+  model       = models.anthropic.claude_sonnet_4
+  personality = "Ships small, well-tested changes and opens clean PRs."
+  tools       = [plugins.localdev.code_develop, plugins.localdev.workspace_status]
+}
+```
+
+**Review bot** — reviews PRs read-only and posts the review back to GitHub. Call
+`code_review` with `post_comments = true` to publish it:
+
+```hcl
+agent "reviewer" {
+  model       = models.anthropic.claude_opus_4
+  personality = "A thorough, security-minded senior reviewer."
+  tools       = [plugins.localdev.code_review]
+}
+```
+```json
+{ "pr_url": "https://github.com/org/repo/pull/42", "post_comments": true }
+```
+
+**Large monorepo** — shallow clone for speed, bigger budgets, push the branch but
+leave PR creation to a human:
+
+```hcl
+plugin "localdev" {
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
+  settings {
+    provider                = "bedrock"
+    aws_region              = "us-east-1"
+    model_id                = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    clone_depth             = "1"
+    max_iterations          = "120"
+    command_timeout_seconds = "900"
+    max_context_bytes       = "65536"
+    open_pr                 = "false"
+  }
+}
+```
+
+**Different model / region** — Claude Opus in `us-west-2` via a named AWS profile:
+
+```hcl
+plugin "localdev" {
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
+  settings {
+    provider    = "bedrock"
+    aws_region  = "us-west-2"
+    aws_profile = "bedrock-prod"
+    model_id    = "us.anthropic.claude-opus-4-20250514-v1:0"
+    temperature = "0"
+  }
+}
+```
+
+A complete, runnable develop → QA → review mission — including the orchestrator
+model, the plugin block, an agent, optional skills, and a three-task mission — is in
+[`examples/squadron.hcl`](examples/squadron.hcl). A bare-minimum config is in
+[`examples/minimal.hcl`](examples/minimal.hcl).
 
 ---
 
@@ -371,7 +496,7 @@ squadron-dev/
     github.go         # GitHub REST client: PRs, reviews, URL parsing
 
   skills/             # Phase guidance, loadable as Squadron skills via load()
-  examples/           # Example Squadron HCL config
+  examples/           # Example Squadron HCL configs (minimal.hcl, squadron.hcl)
   .github/workflows/  # Release workflow (cross-platform build + checksums)
 ```
 

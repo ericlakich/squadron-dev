@@ -29,7 +29,7 @@ func (p *Plugin) runDevelop(ctx context.Context, params developParams) (string, 
 	sess.Repo = repo.String()
 	_ = sess.save(p.cfg.WorkspaceRoot)
 
-	git, err := vcs.Clone(ctx, repo.CloneURL(), sess.WorkspaceDir, p.cfg.GitHubToken)
+	git, err := vcs.Clone(ctx, repo.CloneURL(), sess.WorkspaceDir, p.cfg.GitHubToken, p.cfg.CloneDepth)
 	if err != nil {
 		return p.fail(sess, fmt.Errorf("clone %s: %w", repo, err))
 	}
@@ -58,6 +58,7 @@ func (p *Plugin) runDevelop(ctx context.Context, params developParams) (string, 
 	if err != nil {
 		return p.fail(sess, err)
 	}
+	repoCtx := gatherRepoContext(ws, p.cfg)
 	tools := agent.WorkspaceTools(ws, agent.ToolOptions{
 		AllowWrite:     true,
 		AllowCommands:  true,
@@ -67,7 +68,7 @@ func (p *Plugin) runDevelop(ctx context.Context, params developParams) (string, 
 
 	result, runErr := agent.Run(ctx, p.provider, tools,
 		buildDevelopDirective(params.Task, branch, params.Instructions),
-		agent.Options{System: developSystem, MaxIterations: p.cfg.MaxIterations, Logf: logf})
+		agent.Options{System: developSystem, RepoContext: repoCtx, MaxIterations: p.cfg.MaxIterations, Logf: logf})
 	applyResult(sess, result)
 	if runErr != nil {
 		// Persist whatever progress was made; surface the error in the summary.
@@ -130,6 +131,7 @@ func (p *Plugin) runQA(ctx context.Context, params qaParams) (string, error) {
 	if err != nil {
 		return p.fail(sess, err)
 	}
+	repoCtx := gatherRepoContext(ws, p.cfg)
 	tools := agent.WorkspaceTools(ws, agent.ToolOptions{
 		AllowWrite:     false,
 		AllowCommands:  true,
@@ -139,7 +141,7 @@ func (p *Plugin) runQA(ctx context.Context, params qaParams) (string, error) {
 
 	result, runErr := agent.Run(ctx, p.provider, tools,
 		buildQADirective(target, params.Instructions),
-		agent.Options{System: qaSystem, MaxIterations: p.cfg.MaxIterations, Logf: logf})
+		agent.Options{System: qaSystem, RepoContext: repoCtx, MaxIterations: p.cfg.MaxIterations, Logf: logf})
 	applyResult(sess, result)
 	if runErr != nil {
 		sess.Error = runErr.Error()
@@ -166,6 +168,7 @@ func (p *Plugin) runReview(ctx context.Context, params reviewParams) (string, er
 	if err != nil {
 		return p.fail(sess, err)
 	}
+	repoCtx := gatherRepoContext(ws, p.cfg)
 	tools := agent.WorkspaceTools(ws, agent.ToolOptions{
 		AllowWrite:     false,
 		AllowCommands:  false,
@@ -174,7 +177,7 @@ func (p *Plugin) runReview(ctx context.Context, params reviewParams) (string, er
 
 	result, runErr := agent.Run(ctx, p.provider, tools,
 		buildReviewDirective(target, params.Instructions, diff, maxDiffBytes),
-		agent.Options{System: reviewSystem, MaxIterations: p.cfg.MaxIterations, Logf: logf})
+		agent.Options{System: reviewSystem, RepoContext: repoCtx, MaxIterations: p.cfg.MaxIterations, Logf: logf})
 	applyResult(sess, result)
 	if runErr != nil {
 		sess.Error = runErr.Error()
@@ -223,7 +226,7 @@ func (p *Plugin) checkout(ctx context.Context, sess *Session, repoURL, prURL, br
 	}
 	sess.Repo = repo.String()
 
-	git, err := vcs.Clone(ctx, repo.CloneURL(), sess.WorkspaceDir, p.cfg.GitHubToken)
+	git, err := vcs.Clone(ctx, repo.CloneURL(), sess.WorkspaceDir, p.cfg.GitHubToken, p.cfg.CloneDepth)
 	if err != nil {
 		return "", 0, fmt.Errorf("clone %s: %w", repo, err)
 	}

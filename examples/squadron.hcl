@@ -39,6 +39,14 @@ plugin "localdev" {
     max_iterations          = "60"
     command_timeout_seconds = "600"
 
+    # Full-codebase access. clone_depth = "0" is a full clone (complete tree and
+    # history); the repo's own AGENTS.md/CLAUDE.md/.cursorrules/etc. are loaded as
+    # context automatically.
+    clone_depth        = "0"
+    load_repo_context  = "true"
+    max_context_bytes  = "32768"
+    # context_files    = "AGENTS.md,CLAUDE.md,CONTRIBUTING.md"   # optional override
+
     # Git / PR behavior.
     git_user_name = "Squadron LocalDev"
     git_user_email = "localdev@squadron.sh"

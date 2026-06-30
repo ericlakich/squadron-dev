@@ -243,6 +243,10 @@ A complete develop → QA → review mission is in [`examples/squadron.hcl`](exa
 | `max_iterations` | `50` | Max agent loop turns per phase before stopping. |
 | `command_timeout_seconds` | `300` | Per-command timeout for `run_command`. |
 | `max_output_bytes` | `60000` | Cap on file/command output returned to the model. |
+| `clone_depth` | `0` | Git clone depth. `0` = **full clone** (complete working tree and history). Set a positive integer for a faster shallow clone of very large repositories. |
+| `load_repo_context` | `true` | Load the repository's own instruction/convention files into the agent's context (see [Full-codebase access](#full-codebase-access)). |
+| `context_files` | _(curated set)_ | Comma-separated override of which instruction files to load, relative to the repo root. |
+| `max_context_bytes` | `32768` | Cap on the total size of loaded instruction-file context. |
 | `git_user_name` | `Squadron LocalDev` | Commit author name. |
 | `git_user_email` | `localdev@squadron.sh` | Commit author email. |
 | `auto_push` | `true` | Push the branch after a successful develop run. |
@@ -253,6 +257,38 @@ A complete develop → QA → review mission is in [`examples/squadron.hcl`](exa
 > [Credentials and security](#credentials-and-security).
 
 ---
+
+## Full-codebase access
+
+The plugin is built to operate as an autonomous agent over a **whole repository**,
+not a partial slice:
+
+- **Full clone.** By default the repository is cloned with full history
+  (`clone_depth = 0`), so the agent has the complete working tree and can use
+  `git log`, `git blame`, and accurate base diffs. Set `clone_depth` to a positive
+  value to trade completeness for clone speed on very large repos.
+- **The repo's own instructions become context.** Before each phase runs, the
+  plugin reads the repository's standard instruction and convention files from the
+  checkout and injects them into the agent's system prompt as authoritative
+  guidance, so the agent follows the project's documented build/test commands,
+  style, and rules. Loaded in priority order (first match wins under the byte
+  budget):
+
+  | File | Source convention |
+  |------|-------------------|
+  | `AGENTS.md` | the `agents.md` cross-tool standard |
+  | `CLAUDE.md` | Claude Code |
+  | `GEMINI.md` | Gemini CLI |
+  | `.cursorrules`, `.cursor/rules/*.mdc` | Cursor |
+  | `.windsurfrules` | Windsurf |
+  | `.github/copilot-instructions.md` | GitHub Copilot |
+  | `.goosehints` | Goose |
+  | `CONTRIBUTING.md`, `README.md` | human-facing project docs |
+
+  Override the list with `context_files`, bound the total size with
+  `max_context_bytes`, or disable entirely with `load_repo_context = "false"`. The
+  agent can always read any other file (including nested `AGENTS.md`/`CLAUDE.md`)
+  on demand with its `read_file` tool.
 
 ## How it works
 
@@ -348,9 +384,12 @@ go test ./...
 ```
 
 Tests cover the agent loop (with a fake provider, including tool dispatch, error
-handling, and the iteration cap), the workspace file/command/sandbox behavior, the
-GitHub URL parsing and token injection, and the Bedrock document round-trip and stop-
-reason mapping.
+handling, and the iteration cap), the workspace file/command behavior and sandbox
+(lexical **and** symlink escape rejection, `.git`-write blocking), repository-context
+gathering (priority order and byte budget), GitHub URL parsing and credential
+redaction, the Bedrock document round-trip and stop-reason mapping, and a git
+integration test against a local `file://` remote (clone, checkout including the
+ref==current-branch case, commit, push, and diff).
 
 ---
 

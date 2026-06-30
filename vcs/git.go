@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -31,12 +32,23 @@ import (
 type Git struct {
 	dir   string
 	token string
+	// depth is the shallow-fetch depth for network operations; 0 means full.
+	depth int
 }
 
 // NewGit returns a Git bound to dir. token, if non-empty, authenticates network
 // operations.
 func NewGit(dir, token string) *Git {
 	return &Git{dir: dir, token: token}
+}
+
+// depthArgs returns the --depth flag for network operations, or nil for a full
+// (unbounded) fetch/clone.
+func (g *Git) depthArgs() []string {
+	if g.depth > 0 {
+		return []string{"--depth", strconv.Itoa(g.depth)}
+	}
+	return nil
 }
 
 // Dir returns the working directory.
@@ -77,9 +89,11 @@ func runGitEnv(ctx context.Context, dir, token string, extraEnv []string, args .
 }
 
 // Clone clones repoURL into dir, authenticating without persisting a credential
-// into the cloned repository's git config.
-func Clone(ctx context.Context, repoURL, dir, token string) (*Git, error) {
+// into the cloned repository's git config. depth bounds the history fetched
+// (0 = full clone, giving the agent the complete codebase and history).
+func Clone(ctx context.Context, repoURL, dir, token string, depth int) (*Git, error) {
 	g := NewGit(dir, token)
+	g.depth = depth
 	cloneURL := networkURL(repoURL, token)
 	// The clone runs with no working directory (dir does not exist yet); only
 	// subsequent operations run inside the clone.
@@ -88,7 +102,9 @@ func Clone(ctx context.Context, repoURL, dir, token string) (*Git, error) {
 		return nil, err
 	}
 	defer cleanup()
-	if _, err := runGitEnv(ctx, "", token, env, "clone", "--depth", "50", cloneURL, dir); err != nil {
+	args := append([]string{"clone"}, g.depthArgs()...)
+	args = append(args, cloneURL, dir)
+	if _, err := runGitEnv(ctx, "", token, env, args...); err != nil {
 		return nil, err
 	}
 	// Normalize origin so no secret is persisted: on Unix the username-only URL
@@ -126,7 +142,9 @@ func (g *Git) CreateBranch(ctx context.Context, name string) error {
 // it out. The remote ref is the standard refs/pull/<n>/head.
 func (g *Git) CheckoutPR(ctx context.Context, number int) (string, error) {
 	branch := fmt.Sprintf("pr-%d", number)
-	if _, err := g.runNetwork(ctx, "fetch", "--depth", "50", g.remote(ctx), fmt.Sprintf("pull/%d/head:%s", number, branch)); err != nil {
+	args := append([]string{"fetch"}, g.depthArgs()...)
+	args = append(args, g.remote(ctx), fmt.Sprintf("pull/%d/head:%s", number, branch))
+	if _, err := g.runNetwork(ctx, args...); err != nil {
 		return "", err
 	}
 	if _, err := g.run(ctx, "checkout", branch); err != nil {
@@ -139,7 +157,9 @@ func (g *Git) CheckoutPR(ctx context.Context, number int) (string, error) {
 // into FETCH_HEAD and uses "checkout -B" so it works even when ref is already the
 // checked-out branch (git refuses a direct fetch into the current branch).
 func (g *Git) CheckoutRef(ctx context.Context, ref string) (string, error) {
-	if _, err := g.runNetwork(ctx, "fetch", "--depth", "50", g.remote(ctx), ref); err != nil {
+	args := append([]string{"fetch"}, g.depthArgs()...)
+	args = append(args, g.remote(ctx), ref)
+	if _, err := g.runNetwork(ctx, args...); err != nil {
 		return "", err
 	}
 	if _, err := g.run(ctx, "checkout", "-B", ref, "FETCH_HEAD"); err != nil {
@@ -151,7 +171,9 @@ func (g *Git) CheckoutRef(ctx context.Context, ref string) (string, error) {
 // FetchRef best-effort fetches a ref from origin so it is available locally for
 // diffing. Errors are returned for the caller to handle or ignore.
 func (g *Git) FetchRef(ctx context.Context, ref string) error {
-	_, err := g.runNetwork(ctx, "fetch", "--depth", "50", g.remote(ctx), ref)
+	args := append([]string{"fetch"}, g.depthArgs()...)
+	args = append(args, g.remote(ctx), ref)
+	_, err := g.runNetwork(ctx, args...)
 	return err
 }
 

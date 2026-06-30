@@ -5,16 +5,18 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const (
-	defaultProvider       = "bedrock"
-	defaultMaxIterations  = 50
-	defaultCommandTimeout = 5 * time.Minute
-	defaultMaxOutputBytes = 60_000
-	defaultGitUserName    = "Squadron LocalDev"
-	defaultGitUserEmail   = "localdev@squadron.sh"
+	defaultProvider        = "bedrock"
+	defaultMaxIterations   = 50
+	defaultCommandTimeout  = 5 * time.Minute
+	defaultMaxOutputBytes  = 60_000
+	defaultMaxContextBytes = 32_768
+	defaultGitUserName     = "Squadron LocalDev"
+	defaultGitUserEmail    = "localdev@squadron.sh"
 )
 
 // Settings is the parsed plugin configuration. Provider credentials are NOT part
@@ -32,6 +34,18 @@ type Settings struct {
 	OpenPR         bool
 	BaseBranch     string
 	GitHubToken    string
+	// CloneDepth is the git clone depth. 0 (the default) means a full clone so the
+	// agent has the complete codebase and history; set a positive value for a
+	// faster shallow clone of very large repositories.
+	CloneDepth int
+	// LoadRepoContext controls whether the repository's own instruction/convention
+	// files are loaded into the agent's context.
+	LoadRepoContext bool
+	// ContextFiles overrides the default set of instruction files to load (relative
+	// paths). Empty means use defaultContextFiles.
+	ContextFiles []string
+	// MaxContextBytes caps the total size of loaded repo-context files.
+	MaxContextBytes int
 	// Raw holds the full settings map, forwarded to the provider factory.
 	Raw map[string]string
 }
@@ -41,18 +55,42 @@ func parseSettings(s map[string]string) (*Settings, error) {
 		s = map[string]string{}
 	}
 	cfg := &Settings{
-		Provider:       getOr(s, "provider", defaultProvider),
-		WorkspaceRoot:  getOr(s, "workspace_root", defaultWorkspaceRoot()),
-		MaxIterations:  defaultMaxIterations,
-		CommandTimeout: defaultCommandTimeout,
-		MaxOutputBytes: defaultMaxOutputBytes,
-		GitUserName:    getOr(s, "git_user_name", defaultGitUserName),
-		GitUserEmail:   getOr(s, "git_user_email", defaultGitUserEmail),
-		AutoPush:       getBool(s, "auto_push", true),
-		OpenPR:         getBool(s, "open_pr", true),
-		BaseBranch:     s["base_branch"],
-		GitHubToken:    githubTokenFromEnv(),
-		Raw:            s,
+		Provider:        getOr(s, "provider", defaultProvider),
+		WorkspaceRoot:   getOr(s, "workspace_root", defaultWorkspaceRoot()),
+		MaxIterations:   defaultMaxIterations,
+		CommandTimeout:  defaultCommandTimeout,
+		MaxOutputBytes:  defaultMaxOutputBytes,
+		GitUserName:     getOr(s, "git_user_name", defaultGitUserName),
+		GitUserEmail:    getOr(s, "git_user_email", defaultGitUserEmail),
+		AutoPush:        getBool(s, "auto_push", true),
+		OpenPR:          getBool(s, "open_pr", true),
+		BaseBranch:      s["base_branch"],
+		GitHubToken:     githubTokenFromEnv(),
+		LoadRepoContext: getBool(s, "load_repo_context", true),
+		MaxContextBytes: defaultMaxContextBytes,
+		Raw:             s,
+	}
+
+	if v := s["clone_depth"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid clone_depth %q: must be a non-negative integer (0 = full clone)", v)
+		}
+		cfg.CloneDepth = n
+	}
+	if v := s["max_context_bytes"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid max_context_bytes %q: must be a non-negative integer", v)
+		}
+		cfg.MaxContextBytes = n
+	}
+	if v := s["context_files"]; v != "" {
+		for p := range strings.SplitSeq(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				cfg.ContextFiles = append(cfg.ContextFiles, p)
+			}
+		}
 	}
 
 	if v := s["max_iterations"]; v != "" {

@@ -20,6 +20,9 @@ type Options struct {
 	MaxIterations int
 	MaxTokens     int
 	Temperature   float32
+	// RepoContext, if set, is appended to the system prompt as authoritative
+	// repository guidance (the repo's own instruction/convention files).
+	RepoContext string
 	// Logf, if set, receives progress messages (one per turn / tool call).
 	Logf func(format string, args ...any)
 }
@@ -52,6 +55,16 @@ func Run(ctx context.Context, p provider.Provider, tools []Tool, directive strin
 		specs = append(specs, t.Spec())
 	}
 
+	// Fold the repository's own guidance into the system prompt so it is
+	// authoritative for every turn.
+	system := opts.System
+	if strings.TrimSpace(opts.RepoContext) != "" {
+		system += "\n\n# Repository guidance\n\n" +
+			"The following are instruction and convention files found in this repository. " +
+			"Treat them as authoritative guidance for how to work in this codebase " +
+			"(build/test commands, style, and project rules):\n\n" + opts.RepoContext
+	}
+
 	messages := []provider.Message{
 		{Role: provider.RoleUser, Blocks: []provider.Block{provider.TextBlock(directive)}},
 	}
@@ -64,7 +77,7 @@ func Run(ctx context.Context, p provider.Provider, tools []Tool, directive strin
 		res.Iterations = i + 1
 
 		resp, err := p.Converse(ctx, &provider.Request{
-			System:      opts.System,
+			System:      system,
 			Messages:    messages,
 			Tools:       specs,
 			MaxTokens:   opts.MaxTokens,

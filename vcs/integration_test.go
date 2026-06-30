@@ -65,7 +65,7 @@ func TestCloneCheckoutBranchAndPush(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "clone")
 
-	g, err := Clone(ctx, url, dir, "")
+	g, err := Clone(ctx, url, dir, "", 0)
 	if err != nil {
 		t.Fatalf("Clone: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestCommitAllNoChanges(t *testing.T) {
 	url := setupRemote(t)
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "clone")
-	g, err := Clone(ctx, url, dir, "")
+	g, err := Clone(ctx, url, dir, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

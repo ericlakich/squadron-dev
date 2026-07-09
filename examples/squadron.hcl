@@ -11,9 +11,13 @@
 #      is the brain that performs the local development work. That is where
 #      AWS Bedrock is selected.
 
-variable "anthropic_api_key" {
-  type = string
-}
+# Secrets live in Squadron's vault and are wired into config below. Set them once:
+#   squadron vars set anthropic_api_key "<key>"
+#   squadron vars set bedrock_api_key   "<key>"
+#   squadron vars set github_token      "<token>"
+variable "anthropic_api_key" { secret = true }
+variable "bedrock_api_key"   { secret = true }
+variable "github_token"      { secret = true }
 
 # (1) The orchestrator model that decides when to call the plugin's tools.
 model "anthropic" {
@@ -37,6 +41,11 @@ plugin "localdev" {
     max_tokens  = "8192"
     temperature = "0"
 
+    # Secrets (Squadron vault). bedrock_api_key switches Bedrock to bearer-token
+    # ("API connection") auth; github_token is used for clone/push/PR/review.
+    bedrock_api_key = vars.bedrock_api_key
+    github_token    = vars.github_token
+
     # Local agent loop budget and command execution.
     max_iterations          = "60"
     command_timeout_seconds = "600"
@@ -55,8 +64,8 @@ plugin "localdev" {
     auto_push      = "true"
     open_pr        = "true"
 
-    # NOTE: no credentials here. AWS comes from the credential chain; the GitHub
-    # token comes from the GITHUB_TOKEN environment variable.
+    # If bedrock_api_key / github_token are omitted above, the plugin falls back
+    # to the AWS credential chain and the GITHUB_TOKEN / GH_TOKEN environment vars.
   }
 }
 

@@ -2,10 +2,17 @@
 // Amazon Bedrock Converse API, which exposes a unified, tool-use-capable message
 // format across the foundation models Bedrock hosts (Anthropic Claude, etc.).
 //
-// Credentials are never read from plugin settings. They are resolved through the
-// standard AWS credential chain: environment variables (AWS_ACCESS_KEY_ID, ...),
-// the shared config/credentials files and named profiles, SSO, or an attached
-// IAM role. Settings only select the region, model, and inference parameters.
+// Authentication supports two methods:
+//
+//   - Bedrock API key (the "API connection method"): set the bedrock_api_key
+//     setting — typically wired to a Squadron secret. The client then
+//     authenticates to the Bedrock Runtime API with an HTTP bearer token instead
+//     of SigV4.
+//   - AWS credential chain: if no bedrock_api_key is given, credentials resolve
+//     the usual way (environment, shared config/profile, SSO, IAM role, or the
+//     AWS_BEARER_TOKEN_BEDROCK environment variable).
+//
+// Either way, settings only select the region, model, and inference parameters.
 package bedrock
 
 import (
@@ -20,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go/auth/bearer"
 
 	"github.com/ericlakich/squadron-dev/provider"
 )
@@ -48,6 +56,9 @@ type Bedrock struct {
 // New builds a Bedrock provider from settings.
 //
 // Recognized settings:
+//   - bedrock_api_key: Bedrock API key for bearer-token auth (usually a Squadron
+//     secret). When set, the client uses the "API connection method" instead of
+//     SigV4. Optional.
 //   - aws_region:  AWS region (default us-east-1)
 //   - aws_profile: shared-config profile name (optional)
 //   - model_id:    Bedrock model id or inference profile id
@@ -84,11 +95,28 @@ func New(settings map[string]string) (provider.Provider, error) {
 	}
 
 	return &Bedrock{
-		client:      bedrockruntime.NewFromConfig(cfg),
+		client:      bedrockruntime.NewFromConfig(cfg, bearerOptions(settings["bedrock_api_key"])...),
 		modelID:     get(settings, "model_id", defaultModelID),
 		maxTokens:   int32(maxTokens),
 		temperature: temp,
 	}, nil
+}
+
+// bearerOptions returns client options that authenticate to the Bedrock Runtime
+// API with an HTTP bearer token (a Bedrock API key). When key is empty it returns
+// nil, leaving the client to use the default AWS credential chain.
+func bearerOptions(key string) []func(*bedrockruntime.Options) {
+	if key == "" {
+		return nil
+	}
+	return []func(*bedrockruntime.Options){
+		func(o *bedrockruntime.Options) {
+			o.BearerAuthTokenProvider = bearer.TokenProviderFunc(func(context.Context) (bearer.Token, error) {
+				return bearer.Token{Value: key}, nil
+			})
+			o.AuthSchemePreference = []string{"httpBearerAuth"}
+		},
+	}
 }
 
 // Name implements provider.Provider.

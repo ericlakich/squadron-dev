@@ -123,10 +123,11 @@ Delete a session's local workspace directory to reclaim disk space.
 - **[Squadron](https://docs.squadron.sh)** installed.
 - **`git`** on `PATH` (used to clone repos and manage branches locally).
 - **AWS Bedrock access** in your account, with the target model/inference profile
-  enabled in your region, and credentials available via the standard AWS credential
-  chain (env vars, shared profile, SSO, or an IAM role).
-- **A GitHub token** in the environment (`GITHUB_TOKEN` or `GH_TOKEN`) to clone
-  private repos, push branches, and open PRs / post reviews.
+  enabled in your region, plus either a **Bedrock API key** or AWS credentials —
+  supplied via a Squadron secret (`bedrock_api_key`) or the environment.
+- **A GitHub token** (repo scope) to clone private repos, push branches, and open
+  PRs / post reviews — supplied via a Squadron secret (`github_token`) or the
+  environment (`GITHUB_TOKEN` / `GH_TOKEN`).
 
 **To build from source** (contributing): **Go 1.23+**. You do *not* need Go to use a
 released version — Squadron downloads the prebuilt binary for your platform.
@@ -135,22 +136,50 @@ released version — Squadron downloads the prebuilt binary for your platform.
 
 ## Credentials and security
 
-Credentials are **never** read from HCL settings:
+Both secrets — the **Bedrock API key** and the **GitHub token** — are supplied
+through the plugin's `settings`, wired to **Squadron secrets** (encrypted at rest in
+Squadron's vault). Neither is hard-coded in HCL, and each falls back to the
+environment if the setting is omitted:
 
-- **AWS Bedrock** credentials come from the standard AWS credential chain
-  (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, SSO, or IAM role).
-  Settings only pick the region, model, and inference parameters.
-- **GitHub** authentication comes from the `GITHUB_TOKEN` (or `GH_TOKEN`) environment
-  variable. On Unix the token is supplied to `git` through a transient `GIT_ASKPASS`
-  helper via the child process environment, so it never appears in the process
-  argument list or in the repository's `git` config. (On other platforms it is
-  injected into the remote URL for the single network call as a fallback.) In all
-  cases credentials are **redacted** from any error message before it is shown or
-  persisted.
+```hcl
+variable "bedrock_api_key" { secret = true }
+variable "github_token"    { secret = true }
 
-See [`.env.example`](.env.example). Without a GitHub token the plugin still operates
-on public repositories read-only; develop runs commit locally but skip push/PR, and
-review returns its result without posting.
+plugin "localdev" {
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
+  settings {
+    provider        = "bedrock"
+    aws_region      = "us-west-2"
+    model_id        = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    bedrock_api_key = vars.bedrock_api_key   # secret → Bedrock bearer-token auth
+    github_token    = vars.github_token      # secret → clone / push / PR / review
+  }
+}
+```
+
+Set the secret values once (they are encrypted in `.squadron/vars.vault`):
+
+```bash
+squadron vars set bedrock_api_key  "<your-bedrock-api-key>"
+squadron vars set github_token     "<your-github-token>"
+```
+
+- **AWS Bedrock — API-key ("API connection") method.** When `bedrock_api_key` is
+  set, the client authenticates to the Bedrock Runtime API with an HTTP bearer
+  token instead of SigV4. If it is omitted, credentials fall back to the standard
+  AWS credential chain (`AWS_ACCESS_KEY_ID`/…, `AWS_PROFILE`, SSO, IAM role, or the
+  `AWS_BEARER_TOKEN_BEDROCK` environment variable).
+- **GitHub.** When `github_token` is set it is used for clone/push/PR/review; if
+  omitted it falls back to `GITHUB_TOKEN` / `GH_TOKEN` in the environment. On Unix
+  the token is supplied to `git` through a transient `GIT_ASKPASS` helper via the
+  child process environment, so it never appears in the process argument list or in
+  the repository's `git` config. In all cases credentials are **redacted** from any
+  error message before it is shown or persisted.
+
+See [`.env.example`](.env.example) for the environment-fallback form. Without a
+GitHub token the plugin still operates on public repositories read-only; develop
+runs commit locally but skip push/PR, and review returns its result without posting.
 
 > **Trust model.** During `code_develop` and `code_qa` the agent can run shell
 > commands the model chooses (builds, tests, linters, package installs) inside the
@@ -268,8 +297,10 @@ The settings are detailed below, and several ready-to-adapt configs follow in
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `provider` | `bedrock` | LLM provider that powers the local agent. `bedrock` is the only built-in. |
+| `bedrock_api_key` | _(env fallback)_ | **Secret.** Bedrock API key for bearer-token auth. Wire to a Squadron secret. If unset, falls back to the AWS credential chain / `AWS_BEARER_TOKEN_BEDROCK`. |
+| `github_token` | _(env fallback)_ | **Secret.** GitHub token for clone/push/PR/review. Wire to a Squadron secret. If unset, falls back to `GITHUB_TOKEN` / `GH_TOKEN`. |
 | `aws_region` | `us-east-1` | AWS region for Bedrock. |
-| `aws_profile` | _(none)_ | Optional shared-config profile name. |
+| `aws_profile` | _(none)_ | Optional shared-config profile name (credential-chain auth only). |
 | `model_id` | `us.anthropic.claude-sonnet-4-20250514-v1:0` | Bedrock model id or inference profile id. |
 | `max_tokens` | `8192` | Max output tokens per model turn. |
 | `temperature` | `0` | Sampling temperature. |
@@ -287,7 +318,8 @@ The settings are detailed below, and several ready-to-adapt configs follow in
 | `open_pr` | `true` | Open a PR after pushing (develop phase). |
 | `base_branch` | _(repo default)_ | Default base branch when a phase does not specify one. |
 
-> Credentials (`AWS_*`, `GITHUB_TOKEN`) are intentionally **not** settings — see
+> `bedrock_api_key` and `github_token` are secrets — wire them to Squadron secrets
+> rather than hard-coding them, or leave them unset to use the environment. See
 > [Credentials and security](#credentials-and-security).
 
 ### Configuration examples

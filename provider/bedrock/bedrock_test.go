@@ -1,14 +1,44 @@
 package bedrock
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
 	"github.com/ericlakich/squadron-dev/provider"
 )
+
+func TestBearerOptionsConfiguresToken(t *testing.T) {
+	opts := bearerOptions("sk-bedrock-secret")
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 client option, got %d", len(opts))
+	}
+	var o bedrockruntime.Options
+	opts[0](&o)
+	if len(o.AuthSchemePreference) != 1 || o.AuthSchemePreference[0] != "httpBearerAuth" {
+		t.Errorf("AuthSchemePreference = %v, want [httpBearerAuth]", o.AuthSchemePreference)
+	}
+	if o.BearerAuthTokenProvider == nil {
+		t.Fatal("BearerAuthTokenProvider was not set")
+	}
+	tok, err := o.BearerAuthTokenProvider.RetrieveBearerToken(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Value != "sk-bedrock-secret" {
+		t.Errorf("bearer token = %q, want sk-bedrock-secret", tok.Value)
+	}
+}
+
+func TestBearerOptionsEmptyWithoutKey(t *testing.T) {
+	if opts := bearerOptions(""); opts != nil {
+		t.Errorf("expected no options without a key, got %d", len(opts))
+	}
+}
 
 func TestProviderRegistered(t *testing.T) {
 	found := false

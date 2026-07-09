@@ -19,9 +19,11 @@ const (
 	defaultGitUserEmail    = "localdev@squadron.sh"
 )
 
-// Settings is the parsed plugin configuration. Provider credentials are NOT part
-// of this struct: the AWS credential chain supplies Bedrock credentials, and the
-// GitHub token is read from the environment (GITHUB_TOKEN / GH_TOKEN).
+// Settings is the parsed plugin configuration. Secret credentials — the Bedrock
+// API key and the GitHub token — may be supplied through the settings block
+// (typically wired to Squadron secrets), falling back to the environment. The
+// Bedrock API key is forwarded to the provider via Raw; the GitHub token is
+// resolved here into GitHubToken.
 type Settings struct {
 	Provider       string
 	WorkspaceRoot  string
@@ -65,7 +67,7 @@ func parseSettings(s map[string]string) (*Settings, error) {
 		AutoPush:        getBool(s, "auto_push", true),
 		OpenPR:          getBool(s, "open_pr", true),
 		BaseBranch:      s["base_branch"],
-		GitHubToken:     githubTokenFromEnv(),
+		GitHubToken:     getOr(s, "github_token", githubTokenFromEnv()),
 		LoadRepoContext: getBool(s, "load_repo_context", true),
 		MaxContextBytes: defaultMaxContextBytes,
 		Raw:             s,
@@ -117,8 +119,8 @@ func parseSettings(s map[string]string) (*Settings, error) {
 	return cfg, nil
 }
 
-// githubTokenFromEnv reads a GitHub token from the environment only. Tokens are
-// never accepted through plugin settings.
+// githubTokenFromEnv reads a GitHub token from the environment. It is the
+// fallback when the github_token setting (a Squadron secret) is not provided.
 func githubTokenFromEnv() string {
 	for _, key := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
 		if v := os.Getenv(key); v != "" {

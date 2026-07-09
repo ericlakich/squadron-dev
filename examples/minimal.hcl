@@ -3,13 +3,15 @@
 # LocalDev tool. Everything else uses defaults (full clone, repo-context loading,
 # auto push + PR).
 #
-# Credentials are NOT configured here:
-#   - AWS Bedrock comes from the standard AWS credential chain (env / profile / role).
-#   - GitHub uses the GITHUB_TOKEN (or GH_TOKEN) environment variable.
+# Secrets are supplied via Squadron's vault and wired into the plugin settings.
+# Set them once:
+#   squadron vars set bedrock_api_key "<your-bedrock-api-key>"
+#   squadron vars set github_token    "<your-github-token>"
+#   squadron vars set anthropic_api_key "<your-anthropic-api-key>"
 
-variable "anthropic_api_key" {
-  type = string
-}
+variable "anthropic_api_key" { secret = true }
+variable "bedrock_api_key"   { secret = true }
+variable "github_token"      { secret = true }
 
 # The orchestrator model that decides which plugin tools to call.
 model "anthropic" {
@@ -23,8 +25,10 @@ plugin "localdev" {
   version = "v0.1.0"
 
   settings {
-    provider   = "bedrock"
-    aws_region = "us-east-1"
+    provider        = "bedrock"
+    aws_region      = "us-east-1"
+    bedrock_api_key = vars.bedrock_api_key   # secret → Bedrock bearer-token auth
+    github_token    = vars.github_token      # secret → clone / push / PR / review
     # model_id defaults to a Claude Sonnet inference profile on Bedrock.
   }
 }

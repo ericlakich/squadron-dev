@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	defaultProvider        = "bedrock"
+	defaultProvider        = "bedrock-mantle"
 	defaultMaxIterations   = 50
 	defaultCommandTimeout  = 5 * time.Minute
 	defaultMaxOutputBytes  = 60_000

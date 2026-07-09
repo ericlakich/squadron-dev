@@ -99,9 +99,9 @@ type Plugin struct {
 }
 
 // Configure parses settings, builds the configured provider, and prepares the
-// GitHub client. See the README for the full settings reference. Provider
-// credentials come from the AWS credential chain; the GitHub token from the
-// environment (GITHUB_TOKEN / GH_TOKEN) — never from settings.
+// GitHub client. See the README for the full settings reference. The Bedrock API
+// key and GitHub token are read from settings (typically wired to Squadron
+// secrets), each falling back to the environment when omitted.
 func (p *Plugin) Configure(settings map[string]string) error {
 	cfg, err := parseSettings(settings)
 	if err != nil {

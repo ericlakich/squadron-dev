@@ -41,14 +41,17 @@ func TestBearerOptionsEmptyWithoutKey(t *testing.T) {
 }
 
 func TestProviderRegistered(t *testing.T) {
-	found := false
-	for _, n := range provider.Available() {
-		if n == "bedrock" {
-			found = true
+	// Registered under the canonical name and the backward-compatible alias.
+	for _, want := range []string{"bedrock-runtime", "bedrock"} {
+		found := false
+		for _, n := range provider.Available() {
+			if n == want {
+				found = true
+			}
 		}
-	}
-	if !found {
-		t.Fatal("bedrock provider was not registered")
+		if !found {
+			t.Fatalf("provider %q was not registered", want)
+		}
 	}
 }
 

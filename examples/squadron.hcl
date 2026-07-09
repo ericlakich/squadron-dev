@@ -5,11 +5,11 @@
 #
 #   1. The Squadron orchestrator model (the `model` block below) reasons about
 #      which plugin tools to call. Squadron supports anthropic, openai, gemini,
-#      and ollama here. Bedrock is NOT a Squadron model provider.
+#      and ollama here. Amazon Bedrock is NOT a Squadron model provider.
 #
 #   2. The LocalDev plugin's own provider (configured in the plugin `settings`)
-#      is the brain that performs the local development work. That is where
-#      AWS Bedrock is selected.
+#      is the brain that performs the local development work. That is where the
+#      Amazon Bedrock provider (bedrock-mantle or bedrock-runtime) is selected.
 
 # Secrets live in Squadron's vault and are wired into config below. Set them once:
 #   squadron vars set anthropic_api_key "<key>"
@@ -34,15 +34,15 @@ plugin "localdev" {
   version = "v0.1.0"
 
   settings {
-    # Provider selection (Bedrock is the default and currently only provider).
-    provider    = "bedrock"
-    aws_region  = "us-east-1"
-    model_id    = "us.anthropic.claude-sonnet-4-20250514-v1:0"
-    max_tokens  = "8192"
-    temperature = "0"
+    # Provider selection. "bedrock-mantle" (default) uses the Responses API on the
+    # mantle endpoint; "bedrock-runtime" uses the AWS Converse API via the AWS SDK.
+    provider   = "bedrock-mantle"
+    aws_region = "us-east-1"
+    model_id   = "openai.gpt-oss-120b"   # Responses-capable model id
+    max_tokens = "8192"
 
-    # Secrets (Squadron vault). bedrock_api_key switches Bedrock to bearer-token
-    # ("API connection") auth; github_token is used for clone/push/PR/review.
+    # Secrets (Squadron vault). bedrock_api_key is the Amazon Bedrock API key
+    # (required for bedrock-mantle); github_token is used for clone/push/PR/review.
     bedrock_api_key = vars.bedrock_api_key
     github_token    = vars.github_token
 
@@ -64,8 +64,10 @@ plugin "localdev" {
     auto_push      = "true"
     open_pr        = "true"
 
-    # If bedrock_api_key / github_token are omitted above, the plugin falls back
-    # to the AWS credential chain and the GITHUB_TOKEN / GH_TOKEN environment vars.
+    # If these secrets are omitted above, the plugin falls back to the environment:
+    # AWS_BEARER_TOKEN_BEDROCK / BEDROCK_API_KEY for the Bedrock API key (and, for
+    # bedrock-runtime, the full AWS credential chain), and GITHUB_TOKEN / GH_TOKEN
+    # for GitHub.
   }
 }
 

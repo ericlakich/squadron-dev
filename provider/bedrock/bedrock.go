@@ -1,6 +1,9 @@
 // Package bedrock implements the provider.Provider interface on top of the
-// Amazon Bedrock Converse API, which exposes a unified, tool-use-capable message
-// format across the foundation models Bedrock hosts (Anthropic Claude, etc.).
+// Amazon Bedrock Converse API, served by the bedrock-runtime endpoint. Converse
+// exposes a unified, tool-use-capable message format across the foundation models
+// Bedrock hosts (Anthropic Claude, etc.). It registers as "bedrock-runtime" (with
+// "bedrock" kept as a backward-compatible alias); the sibling mantle package
+// provides the "bedrock-mantle" (Responses API) provider.
 //
 // Authentication supports two methods:
 //
@@ -42,6 +45,9 @@ const (
 )
 
 func init() {
+	// The AWS Bedrock Converse API is served by the bedrock-runtime endpoint.
+	// "bedrock" is kept as a backward-compatible alias for earlier configs.
+	provider.Register("bedrock-runtime", New)
 	provider.Register("bedrock", New)
 }
 
@@ -120,7 +126,7 @@ func bearerOptions(key string) []func(*bedrockruntime.Options) {
 }
 
 // Name implements provider.Provider.
-func (b *Bedrock) Name() string { return "bedrock" }
+func (b *Bedrock) Name() string { return "bedrock-runtime" }
 
 // Converse implements provider.Provider by mapping the neutral request onto a
 // Bedrock ConverseInput, invoking the model, and mapping the result back.

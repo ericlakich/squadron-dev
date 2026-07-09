@@ -2,25 +2,23 @@
 
 A [Squadron](https://docs.squadron.sh) plugin that performs **local software
 development**. It clones GitHub repositories to your local filesystem and drives a
-pluggable LLM provider — **AWS Bedrock** to start — through three phases:
+pluggable Amazon Bedrock provider — the **`bedrock-mantle`** (Responses API)
+endpoint by default, or **`bedrock-runtime`** (Converse API) — through three phases:
 
 1. **Code Development** — implement a change, run tests, open a pull request.
 2. **QA** — check out a PR or branch, build and test it, report findings.
 3. **Review** — review a change read-only and (optionally) post the review to the PR.
 
-It is modeled on the [`squadron-plugin-devin`](https://github.com/ericlakich/squadron-plugin-devin)
-reference plugin, with one fundamental difference:
+The plugin contains the agent itself: it runs a tool-using loop locally where an
+Amazon Bedrock model reads, writes, searches, and executes commands directly in a
+sandboxed workspace on disk.
 
-| | Devin plugin | LocalDev plugin (this) |
-|---|---|---|
-| Where work runs | Devin's remote cloud | **Your local machine** |
-| The "brain" | Devin's hosted agent | **A pluggable provider (AWS Bedrock)** |
-| Workspace | Devin-managed | **Your local filesystem** |
-| Repo access | Devin's GitHub integration | **Local `git` + the GitHub REST API** |
-
-The Devin plugin is a thin HTTP client to a remote agent. This plugin contains the
-agent: it runs a tool-using loop locally where the model reads, writes, searches,
-and executes commands directly in a sandboxed workspace on disk.
+| | LocalDev plugin (this) |
+|---|---|
+| Where work runs | **Your local machine** |
+| The "brain" | **A pluggable Amazon Bedrock provider** |
+| Workspace | **Your local filesystem** |
+| Repo access | **Local `git` + the GitHub REST API** |
 
 ---
 
@@ -28,7 +26,7 @@ and executes commands directly in a sandboxed workspace on disk.
 
 | Requirement | Where it lives |
 |---|---|
-| 1. Provider integration via config (AWS Bedrock first/only) | [`provider/`](provider/provider.go) interface + registry, [`provider/bedrock/`](provider/bedrock/bedrock.go) implementation, selected by the `provider` setting |
+| 1. Provider integration via config | [`provider/`](provider/provider.go) interface + registry, with [`provider/mantle/`](provider/mantle/mantle.go) (`bedrock-mantle`, Responses API) and [`provider/bedrock/`](provider/bedrock/bedrock.go) (`bedrock-runtime`, Converse API) implementations, selected by the `provider` setting |
 | 2. Local filesystem as the workspace | [`workspace/`](workspace/workspace.go) — a sandboxed directory; all file I/O and command execution is constrained to it |
 | 3. GitHub integration for repository access | [`vcs/`](vcs/git.go) — `git` clone/branch/commit/push + [GitHub REST client](vcs/github.go) for PRs and reviews |
 | 4. Accept input direction from the Squadron agent | The `task` / `instructions` tool parameters become the agent [directive](prompts.go); the [agent loop](agent/loop.go) acts on it |
@@ -39,17 +37,17 @@ and executes commands directly in a sandboxed workspace on disk.
 ## Two "brains" — don't confuse them
 
 Squadron has its own model providers (Anthropic, OpenAI, Gemini, Ollama) used by the
-**orchestrator agent** to decide *which tools to call*. **AWS Bedrock is not one of
-them.** This plugin uses Bedrock independently, as the brain that performs the actual
-local development work, configured in the plugin's own `settings` block — exactly as
-the Devin plugin configures Devin as its backend.
+**orchestrator agent** to decide *which tools to call*. **The plugin's Amazon Bedrock
+provider is not one of them.** This plugin uses Bedrock independently, as the brain
+that performs the actual local development work, configured in the plugin's own
+`settings` block.
 
 ```
 Squadron orchestrator agent  --(model block: anthropic/openai/...)
         │  calls tool plugins.localdev.code_develop
         ▼
-LocalDev plugin  --(provider setting: bedrock)
-        │  runs a local tool-using loop powered by Bedrock
+LocalDev plugin  --(provider setting: bedrock-mantle | bedrock-runtime)
+        │  runs a local tool-using loop powered by Amazon Bedrock
         ▼
 Local filesystem workspace + git + GitHub
 ```
@@ -122,9 +120,13 @@ Delete a session's local workspace directory to reclaim disk space.
 
 - **[Squadron](https://docs.squadron.sh)** installed.
 - **`git`** on `PATH` (used to clone repos and manage branches locally).
-- **AWS Bedrock access** in your account, with the target model/inference profile
-  enabled in your region, plus either a **Bedrock API key** or AWS credentials —
-  supplied via a Squadron secret (`bedrock_api_key`) or the environment.
+- **Amazon Bedrock access** in your account, with the target model enabled in your
+  region. Credentials depend on the provider:
+  - `bedrock-mantle` (default) — an **Amazon Bedrock API key**, via the
+    `bedrock_api_key` secret or the environment (`AWS_BEARER_TOKEN_BEDROCK` /
+    `BEDROCK_API_KEY`).
+  - `bedrock-runtime` — a **Bedrock API key** or standard **AWS credentials** (SigV4
+    via the credential chain), via `bedrock_api_key` or the environment.
 - **A GitHub token** (repo scope) to clone private repos, push branches, and open
   PRs / post reviews — supplied via a Squadron secret (`github_token`) or the
   environment (`GITHUB_TOKEN` / `GH_TOKEN`).
@@ -149,10 +151,9 @@ plugin "localdev" {
   source  = "github.com/ericlakich/squadron-dev"
   version = "v0.1.0"
   settings {
-    provider        = "bedrock"
-    aws_region      = "us-west-2"
-    model_id        = "us.anthropic.claude-sonnet-4-20250514-v1:0"
-    bedrock_api_key = vars.bedrock_api_key   # secret → Bedrock bearer-token auth
+    provider        = "bedrock-mantle"
+    aws_region      = "us-east-1"
+    bedrock_api_key = vars.bedrock_api_key   # secret → Bedrock API key
     github_token    = vars.github_token      # secret → clone / push / PR / review
   }
 }
@@ -165,11 +166,17 @@ squadron vars set bedrock_api_key  "<your-bedrock-api-key>"
 squadron vars set github_token     "<your-github-token>"
 ```
 
-- **AWS Bedrock — API-key ("API connection") method.** When `bedrock_api_key` is
-  set, the client authenticates to the Bedrock Runtime API with an HTTP bearer
-  token instead of SigV4. If it is omitted, credentials fall back to the standard
-  AWS credential chain (`AWS_ACCESS_KEY_ID`/…, `AWS_PROFILE`, SSO, IAM role, or the
-  `AWS_BEARER_TOKEN_BEDROCK` environment variable).
+- **`bedrock-mantle` (default).** Authenticates to the mantle endpoint with the
+  Amazon Bedrock API key as a bearer token. Set it via `bedrock_api_key`; if omitted
+  it falls back to `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY`. SigV4 is not used
+  by this provider — use `bedrock-runtime` if you only have AWS credentials.
+- **`bedrock-runtime` — API-key ("API connection") method.** When `bedrock_api_key`
+  is set, the AWS SDK client authenticates to the Bedrock Runtime API with an HTTP
+  bearer token instead of SigV4. If it is omitted, credentials fall back to the
+  standard AWS credential chain (`AWS_ACCESS_KEY_ID`/…, `AWS_PROFILE`, SSO, IAM role,
+  or the `AWS_BEARER_TOKEN_BEDROCK` environment variable).
+- **API keys.** See the AWS guide for creating an
+  [Amazon Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html).
 - **GitHub.** When `github_token` is set it is used for clone/push/PR/review; if
   omitted it falls back to `GITHUB_TOKEN` / `GH_TOKEN` in the environment. On Unix
   the token is supplied to `git` through a transient `GIT_ASKPASS` helper via the
@@ -253,11 +260,11 @@ plugin "localdev" {
   version = "v0.1.0"
 
   settings {
-    provider    = "bedrock"
-    aws_region  = "us-east-1"
-    model_id    = "us.anthropic.claude-sonnet-4-20250514-v1:0"
-    max_tokens  = "8192"
-    temperature = "0"
+    provider        = "bedrock-mantle"
+    aws_region      = "us-east-1"
+    bedrock_api_key = vars.bedrock_api_key
+    model_id        = "openai.gpt-oss-120b"
+    max_tokens      = "8192"
 
     max_iterations          = "60"
     command_timeout_seconds = "600"
@@ -272,6 +279,30 @@ plugin "localdev" {
 
 > For local plugin development, swap `source`/`version` for the local form shown in
 > [Installation](#installation) above — the `settings` block is identical.
+
+### Providers
+
+The plugin ships two Amazon Bedrock providers, selected with the `provider` setting.
+Both drive the same local agent loop; they differ in which Bedrock endpoint and API
+they use and how they authenticate.
+
+| | `bedrock-mantle` (default) | `bedrock-runtime` |
+|---|---|---|
+| Endpoint | `bedrock-mantle.{region}.api.aws` | `bedrock-runtime.{region}.amazonaws.com` |
+| API | OpenAI-compatible **Responses** API (`POST /v1/responses`) | AWS **Converse** API (via the AWS SDK) |
+| Transport | Direct HTTPS (`net/http`) | AWS SDK for Go v2 |
+| Auth | Amazon Bedrock API key (bearer) | Bedrock API key **or** AWS SigV4 credential chain |
+| Model id form | `openai.gpt-oss-120b`, `anthropic.claude-…` | inference profile, e.g. `us.anthropic.claude-sonnet-4-20250514-v1:0` |
+| Best for | New setups; AWS recommends this endpoint | Existing AWS SDK / SigV4 setups, invocation logging |
+
+`bedrock` is accepted as a backward-compatible alias for `bedrock-runtime`.
+
+> **Model ids differ by provider.** The Responses API is only supported by some
+> models — set `model_id` to a Responses-capable model for `bedrock-mantle`, and to
+> a Converse-capable model id or cross-region inference profile for
+> `bedrock-runtime`. Check
+> [model/API compatibility](https://docs.aws.amazon.com/bedrock/latest/userguide/models-api-compatibility.html)
+> and verify the exact id before relying on it.
 
 Attach the tools to an agent:
 
@@ -296,14 +327,15 @@ The settings are detailed below, and several ready-to-adapt configs follow in
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `provider` | `bedrock` | LLM provider that powers the local agent. `bedrock` is the only built-in. |
-| `bedrock_api_key` | _(env fallback)_ | **Secret.** Bedrock API key for bearer-token auth. Wire to a Squadron secret. If unset, falls back to the AWS credential chain / `AWS_BEARER_TOKEN_BEDROCK`. |
+| `provider` | `bedrock-mantle` | Bedrock provider that powers the local agent: `bedrock-mantle` (Responses API) or `bedrock-runtime` (Converse API). `bedrock` is an alias for `bedrock-runtime`. See [Providers](#providers). |
+| `bedrock_api_key` | _(env fallback)_ | **Secret.** Amazon Bedrock API key. Wire to a Squadron secret. Required for `bedrock-mantle`; for `bedrock-runtime` it enables bearer-token auth. If unset, falls back to `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY` (and, for `bedrock-runtime`, the full AWS credential chain). |
 | `github_token` | _(env fallback)_ | **Secret.** GitHub token for clone/push/PR/review. Wire to a Squadron secret. If unset, falls back to `GITHUB_TOKEN` / `GH_TOKEN`. |
-| `aws_region` | `us-east-1` | AWS region for Bedrock. |
-| `aws_profile` | _(none)_ | Optional shared-config profile name (credential-chain auth only). |
-| `model_id` | `us.anthropic.claude-sonnet-4-20250514-v1:0` | Bedrock model id or inference profile id. |
-| `max_tokens` | `8192` | Max output tokens per model turn. |
-| `temperature` | `0` | Sampling temperature. |
+| `aws_region` | `us-east-1` | AWS region. Selects the Bedrock endpoint host for both providers. |
+| `mantle_endpoint` | _(derived from region)_ | `bedrock-mantle` only. Full base URL override, e.g. `https://bedrock-mantle.us-east-1.api.aws`. Env fallback `BEDROCK_MANTLE_ENDPOINT`. |
+| `aws_profile` | _(none)_ | `bedrock-runtime` only. Shared-config profile name (credential-chain auth). |
+| `model_id` | `openai.gpt-oss-120b` (mantle) / `us.anthropic.claude-sonnet-4-20250514-v1:0` (runtime) | Model id. The form differs by provider — see [Providers](#providers). |
+| `max_tokens` | `8192` | Max output tokens per model turn (`max_output_tokens` on the Responses API). |
+| `temperature` | _(model default)_ | Sampling temperature. On `bedrock-mantle` it is sent only when set here, since some Responses models reject an explicit temperature. |
 | `workspace_root` | `~/.squadron/localdev/workspaces` | Root directory for per-session workspaces. |
 | `max_iterations` | `50` | Max agent loop turns per phase before stopping. |
 | `command_timeout_seconds` | `300` | Per-command timeout for `run_command`. |
@@ -337,8 +369,9 @@ plugin "localdev" {
   source  = "github.com/ericlakich/squadron-dev"
   version = "v0.1.0"
   settings {
-    provider   = "bedrock"
-    aws_region = "us-east-1"
+    provider        = "bedrock-mantle"
+    aws_region      = "us-east-1"
+    bedrock_api_key = vars.bedrock_api_key
   }
 }
 
@@ -380,9 +413,10 @@ plugin "localdev" {
   source  = "github.com/ericlakich/squadron-dev"
   version = "v0.1.0"
   settings {
-    provider                = "bedrock"
+    provider                = "bedrock-mantle"
     aws_region              = "us-east-1"
-    model_id                = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    bedrock_api_key         = vars.bedrock_api_key
+    model_id                = "openai.gpt-oss-120b"
     clone_depth             = "1"
     max_iterations          = "120"
     command_timeout_seconds = "900"
@@ -392,14 +426,15 @@ plugin "localdev" {
 }
 ```
 
-**Different model / region** — Claude Opus in `us-west-2` via a named AWS profile:
+**Converse via `bedrock-runtime`** — use the AWS SDK path with a named AWS profile
+(SigV4) and a Claude Opus inference profile in `us-west-2`:
 
 ```hcl
 plugin "localdev" {
   source  = "github.com/ericlakich/squadron-dev"
   version = "v0.1.0"
   settings {
-    provider    = "bedrock"
+    provider    = "bedrock-runtime"
     aws_region  = "us-west-2"
     aws_profile = "bedrock-prod"
     model_id    = "us.anthropic.claude-opus-4-20250514-v1:0"

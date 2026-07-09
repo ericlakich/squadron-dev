@@ -4,9 +4,10 @@
 // for executing any tools the model requests and feeding the results back.
 //
 // Providers are registered by name so the plugin can select one from HCL config.
-// AWS Bedrock is the first (and currently only) provider; adding another (OpenAI,
-// Anthropic direct, Ollama, ...) is a matter of implementing Provider and calling
-// Register from the new package's init function.
+// Two Amazon Bedrock providers ship: "bedrock-mantle" (Responses API) and
+// "bedrock-runtime" (Converse API). Adding another (OpenAI, Anthropic direct,
+// Ollama, ...) is a matter of implementing Provider and calling Register from the
+// new package's init function.
 package provider
 
 import (
@@ -105,9 +106,10 @@ type Provider interface {
 	Converse(ctx context.Context, req *Request) (*Response, error)
 }
 
-// Factory builds a Provider from plugin settings. Implementations must resolve
-// credentials from the ambient environment (AWS credential chain, env vars,
-// IAM roles) rather than from settings.
+// Factory builds a Provider from plugin settings. Credentials may be supplied
+// through settings (e.g. bedrock_api_key, typically wired to a Squadron secret)
+// and should fall back to the ambient environment (AWS credential chain, env vars,
+// IAM roles) when omitted.
 type Factory func(settings map[string]string) (Provider, error)
 
 var registry = map[string]Factory{}

@@ -25,11 +25,11 @@ plugin "localdev" {
   version = "v0.1.0"
 
   settings {
-    provider        = "bedrock"
+    provider        = "bedrock-mantle"       # Responses API (default)
     aws_region      = "us-east-1"
-    bedrock_api_key = vars.bedrock_api_key   # secret → Bedrock bearer-token auth
-    github_token    = vars.github_token      # secret → clone / push / PR / review
-    # model_id defaults to a Claude Sonnet inference profile on Bedrock.
+    bedrock_api_key = vars.bedrock_api_key    # secret → Amazon Bedrock API key
+    github_token    = vars.github_token       # secret → clone / push / PR / review
+    # model_id defaults to openai.gpt-oss-120b; set a Responses-capable model id.
   }
 }
 

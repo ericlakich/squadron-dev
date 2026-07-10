@@ -42,6 +42,7 @@ const (
 	defaultRegion      = "us-east-1"
 	defaultMaxTokens   = 8192
 	defaultTemperature = float32(0)
+	defaultStreamMode  = "stream"
 )
 
 func init() {
@@ -59,6 +60,7 @@ type Bedrock struct {
 	temperature    float32
 	requestTimeout time.Duration
 	guard          *provider.Guard
+	streamMode     string
 }
 
 // New builds a Bedrock provider from settings.
@@ -75,6 +77,8 @@ type Bedrock struct {
 //   - request_timeout_seconds: hard ceiling on one model call (default 300)
 //   - stall_detection_seconds: cancel if the stream is idle this long (default 90, 0 disables)
 //   - log_file: durable path for heartbeat/stall logs (default ~/.squadron/localdev/plugin.log)
+//   - stream_mode: "stream" (default) or "non-streaming". Use "non-streaming" for
+//     models that don't support ConverseStream properly (e.g. some Qwen configurations).
 func New(settings map[string]string) (provider.Provider, error) {
 	region := get(settings, "aws_region", defaultRegion)
 
@@ -122,6 +126,11 @@ func New(settings map[string]string) (provider.Provider, error) {
 		temp = float32(f)
 	}
 
+	streamMode := get(settings, "stream_mode", defaultStreamMode)
+	if streamMode != "stream" && streamMode != "non-streaming" {
+		return nil, fmt.Errorf("invalid stream_mode %q: must be %q or %q", streamMode, defaultStreamMode, "non-streaming")
+	}
+
 	return &Bedrock{
 		client:         bedrockruntime.NewFromConfig(cfg, bearerOptions(settings["bedrock_api_key"])...),
 		modelID:        get(settings, "model_id", defaultModelID),
@@ -129,6 +138,7 @@ func New(settings map[string]string) (provider.Provider, error) {
 		temperature:    temp,
 		requestTimeout: requestTimeout,
 		guard:          guard,
+		streamMode:     streamMode,
 	}, nil
 }
 
@@ -152,10 +162,12 @@ func bearerOptions(key string) []func(*bedrockruntime.Options) {
 // Name implements provider.Provider.
 func (b *Bedrock) Name() string { return "bedrock-runtime" }
 
-// Converse implements provider.Provider using the Bedrock ConverseStream API.
+// Converse implements provider.Provider using the Bedrock Converse API.
+// It supports both streaming (ConverseStream) and non-streaming (Converse) modes.
 // Streaming lets a per-event stall watchdog cancel a genuinely dead connection
 // (no events for stall_detection_seconds) without penalizing a legitimately long
-// generation, whose tokens keep the stream active.
+// generation, whose tokens keep the stream active. Non-streaming mode is available
+// for models that don't support ConverseStream properly.
 func (b *Bedrock) Converse(ctx context.Context, req *provider.Request) (*provider.Response, error) {
 	maxTokens := b.maxTokens
 	if req.MaxTokens > 0 {
@@ -194,9 +206,20 @@ func (b *Bedrock) Converse(ctx context.Context, req *provider.Request) (*provide
 	gctx, gc := b.guard.Start(callCtx, provider.SessionFromContext(ctx))
 	defer gc.Finish()
 
-	out, err := b.client.ConverseStream(gctx, in)
+	// Use non-streaming mode for models that don't support ConverseStream properly
+	if b.streamMode == "non-streaming" {
+		return b.converseNonStreaming(gctx, in, gc, callCtx, ctx)
+	}
+
+	// Streaming mode with stall detection
+	return b.converseStreaming(gctx, in, gc, callCtx, ctx)
+}
+
+// converseStreaming uses ConverseStream for streaming model responses with stall detection.
+func (b *Bedrock) converseStreaming(ctx context.Context, in *bedrockruntime.ConverseStreamInput, gc *provider.Call, callCtx, ctxOuter context.Context) (*provider.Response, error) {
+	out, err := b.client.ConverseStream(ctx, in)
 	if err != nil {
-		return nil, b.streamError(err, gc, callCtx, ctx)
+		return nil, b.streamError(err, gc, callCtx, ctxOuter)
 	}
 
 	acc := &converseAccumulator{}
@@ -209,7 +232,7 @@ func (b *Bedrock) Converse(ctx context.Context, req *provider.Request) (*provide
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return nil, b.streamError(err, gc, callCtx, ctx)
+		return nil, b.streamError(err, gc, callCtx, ctxOuter)
 	}
 	return acc.result(), nil
 }
@@ -339,4 +362,50 @@ func get(m map[string]string, key, def string) string {
 		return v
 	}
 	return def
+}
+
+// converseNonStreaming uses the non-streaming Converse API instead of ConverseStream.
+// This is a workaround for models that don't support streaming properly (e.g. some
+// Qwen configurations). It still uses the guard for request timeout, but doesn't
+// benefit from per-event stall detection.
+func (b *Bedrock) converseNonStreaming(ctx context.Context, in *bedrockruntime.ConverseStreamInput, gc *provider.Call, callCtx, ctxOuter context.Context) (*provider.Response, error) {
+	out, err := b.client.Converse(ctx, &bedrockruntime.ConverseInput{
+		ModelId:         in.ModelId,
+		Messages:        in.Messages,
+		InferenceConfig: in.InferenceConfig,
+		System:          in.System,
+		ToolConfig:      in.ToolConfig,
+	})
+	if err != nil {
+		return nil, b.streamError(err, gc, callCtx, ctxOuter)
+	}
+
+	acc := &converseAccumulator{}
+
+	// Extract text content and tool uses from the message
+	if msg, ok := out.Output.(*types.ConverseOutputMemberMessage); ok {
+		for _, block := range msg.Value.Content {
+			if txt, ok := block.(*types.ContentBlockMemberText); ok {
+				acc.text.WriteString(txt.Value)
+			}
+			if tu, ok := block.(*types.ContentBlockMemberToolUse); ok {
+				raw, err := documentToRaw(tu.Value.Input)
+				if err != nil {
+					raw = json.RawMessage("{}")
+				}
+				acc.resp.ToolUses = append(acc.resp.ToolUses, provider.ToolUse{
+					ID:    aws.ToString(tu.Value.ToolUseId),
+					Name:  aws.ToString(tu.Value.Name),
+					Input: raw,
+				})
+			}
+		}
+	}
+
+	// Extract usage and stop reason
+	acc.resp.Usage.InputTokens = int(aws.ToInt32(out.Usage.InputTokens))
+	acc.resp.Usage.OutputTokens = int(aws.ToInt32(out.Usage.OutputTokens))
+	acc.resp.StopReason = mapStopReason(out.StopReason)
+
+	return acc.result(), nil
 }

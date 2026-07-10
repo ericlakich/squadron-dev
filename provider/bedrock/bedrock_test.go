@@ -131,3 +131,42 @@ func TestMapStopReason(t *testing.T) {
 		}
 	}
 }
+
+func TestNewStreamMode(t *testing.T) {
+	cases := []struct {
+		mode     string
+		wantErr  bool
+	}{
+		{"stream", false},
+		{"non-streaming", false},
+		{"STREAM", true},
+		{"nonstreaming", true},
+		{"", false}, // empty defaults to "stream"
+	}
+	for _, c := range cases {
+		settings := map[string]string{
+			"bedrock_api_key": "k",
+		}
+		if c.mode != "" {
+			settings["stream_mode"] = c.mode
+		}
+		_, err := New(settings)
+		if c.wantErr && err == nil {
+			t.Errorf("stream_mode=%q should error but didn't", c.mode)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("stream_mode=%q should not error but got: %v", c.mode, err)
+		}
+	}
+}
+
+func TestNewDefaultStreamMode(t *testing.T) {
+	p, err := New(map[string]string{"bedrock_api_key": "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := p.(*Bedrock)
+	if b.streamMode != "stream" {
+		t.Errorf("default stream_mode = %q, want %q", b.streamMode, "stream")
+	}
+}

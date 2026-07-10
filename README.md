@@ -421,6 +421,7 @@ stderr) every 30s so you can watch progress live:
 | `provider` | `bedrock-mantle` | Bedrock provider that powers the local agent: `bedrock-mantle` (mantle endpoint) or `bedrock-runtime` (Converse API). `bedrock` is an alias for `bedrock-runtime`. See [Providers](#providers). |
 | `response_format` | `text` | Phase-tool result format: `text` (human-readable summary, default) or `json` (typed payload). See [Output format](#output-format). |
 | `mantle_api` | `responses` | `bedrock-mantle` only. Which mantle API to use: `responses` (OpenAI Responses; OpenAI GPT models only) or `chat_completions` (OpenAI Chat Completions; broadly supported, incl. Qwen). |
+| `stream_mode` | `stream` | `bedrock-runtime` only. Use `"stream"` (default) for streaming ConverseStream, or `"non-streaming"` for models that don't support streaming properly (e.g. some Qwen configurations). |
 | `bedrock_api_key` | _(env fallback)_ | **Secret.** Amazon Bedrock API key. Wire to a Squadron secret. Required for `bedrock-mantle`; for `bedrock-runtime` it enables bearer-token auth. If unset, falls back to `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY` (and, for `bedrock-runtime`, the full AWS credential chain). |
 | `github_token` | _(env fallback)_ | **Secret.** GitHub token for clone/push/PR/review. Wire to a Squadron secret. If unset, falls back to `GITHUB_TOKEN` / `GH_TOKEN`. |
 | `aws_region` | `us-east-1` | AWS region. Selects the Bedrock endpoint host for both providers. |
@@ -541,6 +542,24 @@ plugin "localdev" {
 }
 ```
 
+**Qwen Coder on `bedrock-runtime`** — some Qwen configurations don't support streaming
+properly. If you experience hangs or half-open sockets with `bedrock-runtime`, set
+`stream_mode = "non-streaming"`:
+
+```hcl
+plugin "localdev" {
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
+  settings {
+    provider    = "bedrock-runtime"
+    aws_region  = "us-east-1"
+    model_id    = "qwen.qwen3-coder-next"
+    stream_mode = "non-streaming"  # disable streaming for Qwen
+    temperature = "0"
+  }
+}
+```
+
 **Converse via `bedrock-runtime`** — use the AWS SDK path with a named AWS profile
 (SigV4) and a Claude Opus inference profile in `us-west-2`:
 
@@ -553,6 +572,24 @@ plugin "localdev" {
     aws_region  = "us-west-2"
     aws_profile = "bedrock-prod"
     model_id    = "us.anthropic.claude-opus-4-20250514-v1:0"
+    temperature = "0"
+  }
+}
+```
+
+**Qwen Coder on `bedrock-runtime`** — some Qwen configurations don't support streaming
+properly. If you experience hangs or half-open sockets with `bedrock-runtime`, set
+`stream_mode = "non-streaming"`:
+
+```hcl
+plugin "localdev" {
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
+  settings {
+    provider    = "bedrock-runtime"
+    aws_region  = "us-east-1"
+    model_id    = "qwen.qwen3-coder-next"
+    stream_mode = "non-streaming"  # disable streaming for Qwen
     temperature = "0"
   }
 }

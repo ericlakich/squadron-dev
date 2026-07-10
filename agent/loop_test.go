@@ -76,6 +76,16 @@ func TestRunExecutesToolThenFinishes(t *testing.T) {
 	if res.InputTokens != 18 || res.OutputTokens != 8 {
 		t.Errorf("token totals = %d/%d, want 18/8", res.InputTokens, res.OutputTokens)
 	}
+	// Both assistant turns produced text, so both are captured in the transcript.
+	if len(res.Transcript) != 2 {
+		t.Fatalf("Transcript has %d entries, want 2: %+v", len(res.Transcript), res.Transcript)
+	}
+	if res.Transcript[0].Turn != 1 || res.Transcript[0].Text != "let me call the tool" {
+		t.Errorf("transcript[0] = %+v", res.Transcript[0])
+	}
+	if res.Transcript[1].Turn != 2 || res.Transcript[1].Text != "all done" {
+		t.Errorf("transcript[1] = %+v", res.Transcript[1])
+	}
 	// The second request must carry the tool result back to the model.
 	if fp.last == nil || len(fp.last.Messages) != 3 {
 		t.Fatalf("expected 3 messages on final turn (user, assistant, tool-result), got %d", len(fp.last.Messages))
@@ -97,6 +107,11 @@ func TestRunReportsUnknownToolWithoutCrashing(t *testing.T) {
 	}
 	if res.FinalText != "recovered" {
 		t.Errorf("FinalText = %q, want 'recovered'", res.FinalText)
+	}
+	// The first turn had no text (tool call only), so only the final turn is in
+	// the transcript.
+	if len(res.Transcript) != 1 || res.Transcript[0].Text != "recovered" {
+		t.Errorf("transcript = %+v, want a single 'recovered' entry", res.Transcript)
 	}
 	tr := fp.last.Messages[2].Blocks[0].ToolResult
 	if tr == nil || !tr.IsError {

@@ -35,6 +35,20 @@ func TestSettingsGitHubTokenBeatsEnv(t *testing.T) {
 	}
 }
 
+func TestResponseFormatDefaultAndValidation(t *testing.T) {
+	cfg, err := parseSettings(map[string]string{})
+	if err != nil || cfg.ResponseFormat != responseFormatText {
+		t.Errorf("default ResponseFormat = %q, %v; want text", cfg.ResponseFormat, err)
+	}
+	cfg, err = parseSettings(map[string]string{"response_format": "json"})
+	if err != nil || cfg.ResponseFormat != responseFormatJSON {
+		t.Errorf("ResponseFormat = %q, %v; want json", cfg.ResponseFormat, err)
+	}
+	if _, err := parseSettings(map[string]string{"response_format": "yaml"}); err == nil {
+		t.Error("expected error for invalid response_format")
+	}
+}
+
 // The Bedrock API key is not resolved into Settings; it is forwarded verbatim to
 // the provider factory via Raw.
 func TestBedrockAPIKeyForwardedViaRaw(t *testing.T) {

@@ -221,6 +221,23 @@ func (g *Git) Diff(ctx context.Context, spec string) (string, error) {
 	return g.run(ctx, "diff", spec)
 }
 
+// ChangedFilesInHEAD returns the paths modified by the HEAD commit (including a
+// root commit). It is best-effort: callers that only want the list for reporting
+// should tolerate an error by ignoring the result.
+func (g *Git) ChangedFilesInHEAD(ctx context.Context) ([]string, error) {
+	out, err := g.run(ctx, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
 // DefaultBranch returns the repository's default branch as reported by origin/HEAD,
 // falling back to "main".
 func (g *Git) DefaultBranch(ctx context.Context) string {

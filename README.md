@@ -2,8 +2,9 @@
 
 A [Squadron](https://docs.squadron.sh) plugin that performs **local software
 development**. It clones GitHub repositories to your local filesystem and drives a
-pluggable Amazon Bedrock provider — the **`bedrock-mantle`** (Responses API)
-endpoint by default, or **`bedrock-runtime`** (Converse API) — through three phases:
+pluggable Amazon Bedrock provider — the **`bedrock-mantle`** endpoint (OpenAI
+Responses or Chat Completions API) by default, or **`bedrock-runtime`** (Converse
+API) — through three phases:
 
 1. **Code Development** — implement a change, run tests, open a pull request.
 2. **QA** — check out a PR or branch, build and test it, report findings.
@@ -26,7 +27,7 @@ sandboxed workspace on disk.
 
 | Requirement | Where it lives |
 |---|---|
-| 1. Provider integration via config | [`provider/`](provider/provider.go) interface + registry, with [`provider/mantle/`](provider/mantle/mantle.go) (`bedrock-mantle`, Responses API) and [`provider/bedrock/`](provider/bedrock/bedrock.go) (`bedrock-runtime`, Converse API) implementations, selected by the `provider` setting |
+| 1. Provider integration via config | [`provider/`](provider/provider.go) interface + registry, with [`provider/mantle/`](provider/mantle/mantle.go) (`bedrock-mantle`, Responses / Chat Completions API) and [`provider/bedrock/`](provider/bedrock/bedrock.go) (`bedrock-runtime`, Converse API) implementations, selected by the `provider` setting |
 | 2. Local filesystem as the workspace | [`workspace/`](workspace/workspace.go) — a sandboxed directory; all file I/O and command execution is constrained to it |
 | 3. GitHub integration for repository access | [`vcs/`](vcs/git.go) — `git` clone/branch/commit/push + [GitHub REST client](vcs/github.go) for PRs and reviews |
 | 4. Accept input direction from the Squadron agent | The `task` / `instructions` tool parameters become the agent [directive](prompts.go); the [agent loop](agent/loop.go) acts on it |
@@ -289,18 +290,29 @@ they use and how they authenticate.
 | | `bedrock-mantle` (default) | `bedrock-runtime` |
 |---|---|---|
 | Endpoint | `bedrock-mantle.{region}.api.aws` | `bedrock-runtime.{region}.amazonaws.com` |
-| API | OpenAI-compatible **Responses** API (`POST /v1/responses`) | AWS **Converse** API (via the AWS SDK) |
+| API | OpenAI-compatible **Responses** or **Chat Completions** (`mantle_api`) | AWS **Converse** API (via the AWS SDK) |
 | Transport | Direct HTTPS (`net/http`) | AWS SDK for Go v2 |
 | Auth | Amazon Bedrock API key (bearer) | Bedrock API key **or** AWS SigV4 credential chain |
-| Model id form | `openai.gpt-oss-120b`, `anthropic.claude-…` | inference profile, e.g. `us.anthropic.claude-sonnet-4-20250514-v1:0` |
+| Model id form | `openai.gpt-oss-120b`, `qwen.qwen3-coder-next`, … | inference profile, e.g. `us.anthropic.claude-sonnet-4-20250514-v1:0` |
 | Best for | New setups; AWS recommends this endpoint | Existing AWS SDK / SigV4 setups, invocation logging |
 
 `bedrock` is accepted as a backward-compatible alias for `bedrock-runtime`.
 
-> **Model ids differ by provider.** The Responses API is only supported by some
-> models — set `model_id` to a Responses-capable model for `bedrock-mantle`, and to
-> a Converse-capable model id or cross-region inference profile for
-> `bedrock-runtime`. Check
+**Choosing the `bedrock-mantle` API (`mantle_api`).** The mantle endpoint exposes
+two OpenAI-compatible APIs, and **model support differs**:
+
+- `responses` (default) — the OpenAI **Responses** API (`POST /v1/responses`).
+  Supported only by the OpenAI GPT family (e.g. `gpt-oss-120b`, `gpt-oss-20b`).
+- `chat_completions` — the OpenAI **Chat Completions** API
+  (`POST /v1/chat/completions`). Broadly supported, including **Qwen**
+  (`qwen.qwen3-coder-next`), which does **not** support the Responses API.
+
+If you point `bedrock-mantle` at a model that doesn't support the selected API you
+get an HTTP 400 like `The model '…' does not support the '/v1/responses' API` — set
+`mantle_api = "chat_completions"` (or switch to `bedrock-runtime`) for that model.
+
+> **Model ids and API support differ.** Set `model_id` to a model that supports the
+> API you selected. Check
 > [model/API compatibility](https://docs.aws.amazon.com/bedrock/latest/userguide/models-api-compatibility.html)
 > and verify the exact id before relying on it.
 
@@ -327,7 +339,8 @@ The settings are detailed below, and several ready-to-adapt configs follow in
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `provider` | `bedrock-mantle` | Bedrock provider that powers the local agent: `bedrock-mantle` (Responses API) or `bedrock-runtime` (Converse API). `bedrock` is an alias for `bedrock-runtime`. See [Providers](#providers). |
+| `provider` | `bedrock-mantle` | Bedrock provider that powers the local agent: `bedrock-mantle` (mantle endpoint) or `bedrock-runtime` (Converse API). `bedrock` is an alias for `bedrock-runtime`. See [Providers](#providers). |
+| `mantle_api` | `responses` | `bedrock-mantle` only. Which mantle API to use: `responses` (OpenAI Responses; OpenAI GPT models only) or `chat_completions` (OpenAI Chat Completions; broadly supported, incl. Qwen). |
 | `bedrock_api_key` | _(env fallback)_ | **Secret.** Amazon Bedrock API key. Wire to a Squadron secret. Required for `bedrock-mantle`; for `bedrock-runtime` it enables bearer-token auth. If unset, falls back to `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY` (and, for `bedrock-runtime`, the full AWS credential chain). |
 | `github_token` | _(env fallback)_ | **Secret.** GitHub token for clone/push/PR/review. Wire to a Squadron secret. If unset, falls back to `GITHUB_TOKEN` / `GH_TOKEN`. |
 | `aws_region` | `us-east-1` | AWS region. Selects the Bedrock endpoint host for both providers. |
@@ -422,6 +435,25 @@ plugin "localdev" {
     command_timeout_seconds = "900"
     max_context_bytes       = "65536"
     open_pr                 = "false"
+  }
+}
+```
+
+**Qwen Coder on `bedrock-mantle`** — Qwen supports Chat Completions but not the
+Responses API, so select `mantle_api = "chat_completions"`:
+
+```hcl
+plugin "localdev" {
+  source  = "github.com/ericlakich/squadron-dev"
+  version = "v0.1.0"
+  settings {
+    provider        = "bedrock-mantle"
+    mantle_api      = "chat_completions"
+    aws_region      = "us-west-2"
+    bedrock_api_key = vars.bedrock_api_key
+    model_id        = "qwen.qwen3-coder-next"
+    max_tokens      = "65536"
+    temperature     = "0"
   }
 }
 ```

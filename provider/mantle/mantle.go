@@ -1,24 +1,29 @@
 // Package mantle implements the provider.Provider interface against the Amazon
-// Bedrock "bedrock-mantle" endpoint using the OpenAI-compatible Responses API:
+// Bedrock "bedrock-mantle" endpoint. The mantle endpoint exposes several
+// OpenAI/Anthropic-compatible APIs; this provider supports two, selected by the
+// mantle_api setting:
 //
-//	POST https://bedrock-mantle.{region}.api.aws/v1/responses
+//   - "responses" (default): the OpenAI-compatible Responses API
+//     (POST https://bedrock-mantle.{region}.api.aws/v1/responses). Only a subset
+//     of models support it (the OpenAI GPT family).
+//   - "chat_completions": the OpenAI-compatible Chat Completions API
+//     (POST https://bedrock-mantle.{region}.api.aws/v1/chat/completions). Broadly
+//     supported, including Qwen, which does not support the Responses API.
 //
 // This is distinct from the sibling bedrock (bedrock-runtime) provider, which
-// speaks the AWS Bedrock Converse API through the AWS SDK. The mantle endpoint is
-// a plain HTTPS service that accepts the OpenAI Responses request/response format,
-// so this provider talks to it directly with net/http and maps the neutral
-// provider.Request/Response onto Responses items. No AWS SDK, SigV4, or Converse
-// translation is involved.
+// speaks the AWS Bedrock Converse API through the AWS SDK. The mantle endpoint is a
+// plain HTTPS service, so this provider talks to it directly with net/http and maps
+// the neutral provider.Request/Response onto the selected API's wire format. No AWS
+// SDK, SigV4, or Converse translation is involved.
 //
 // The agent loop is stateless — it resends the full conversation each turn — so
-// this provider sends store=false and replays the history as Responses input
-// items (message, function_call, function_call_output) rather than relying on
-// previous_response_id.
+// both API mappings replay the full history rather than relying on server-side
+// state (the Responses API is sent with store=false).
 //
 // Authentication uses an Amazon Bedrock API key sent as an Authorization bearer
-// token (the method the Responses API documents). The key comes from the
-// bedrock_api_key setting — typically wired to a Squadron secret — falling back to
-// the AWS_BEARER_TOKEN_BEDROCK or BEDROCK_API_KEY environment variable.
+// token. The key comes from the bedrock_api_key setting — typically wired to a
+// Squadron secret — falling back to the AWS_BEARER_TOKEN_BEDROCK or BEDROCK_API_KEY
+// environment variable.
 package mantle
 
 import (
@@ -38,9 +43,10 @@ import (
 
 const (
 	defaultRegion = "us-east-1"
-	// defaultModelID is the model used when model_id is unset. The Responses API is
-	// only supported by some models — VERIFY this matches a Responses-capable model
-	// enabled on your account/region and override with model_id as needed.
+	// defaultModelID is the model used when model_id is unset. The default suits the
+	// Responses API; for chat_completions set model_id to a Chat-Completions-capable
+	// model (e.g. qwen.qwen3-coder-next). Always VERIFY the id/API against your
+	// account and region.
 	defaultModelID   = "openai.gpt-oss-120b"
 	defaultMaxTokens = 8192
 	// defaultTimeout is a backstop for a single inference turn; the caller's
@@ -49,18 +55,23 @@ const (
 	// maxResponseBytes caps how much of a response body we read so a misbehaving
 	// endpoint cannot exhaust memory.
 	maxResponseBytes = 32 << 20
-	// responsesPath is appended to the endpoint base URL.
-	responsesPath = "/v1/responses"
+
+	// mantle_api modes and their endpoint paths.
+	apiResponses       = "responses"
+	apiChatCompletions = "chat_completions"
+	responsesPath      = "/v1/responses"
+	chatPath           = "/v1/chat/completions"
 )
 
 func init() {
 	provider.Register("bedrock-mantle", New)
 }
 
-// Mantle is a provider backed by the bedrock-mantle Responses API.
+// Mantle is a provider backed by the bedrock-mantle endpoint.
 type Mantle struct {
 	http        *http.Client
-	endpoint    string // full URL to POST
+	endpoint    string // full URL to POST (path depends on api)
+	api         string // apiResponses or apiChatCompletions
 	apiKey      string
 	modelID     string
 	maxTokens   int32
@@ -71,19 +82,30 @@ type Mantle struct {
 // New builds a Mantle provider from settings.
 //
 // Recognized settings:
+//   - mantle_api:      "responses" (default) or "chat_completions". Chat Completions
+//     is required for models that don't support the Responses API (e.g. Qwen).
 //   - aws_region:      region used to build the default endpoint host (default
 //     us-east-1). Ignored when mantle_endpoint is set.
 //   - mantle_endpoint: optional full base URL override, e.g.
-//     https://bedrock-mantle.us-east-1.api.aws (the "/v1/responses" path is
-//     appended if absent). Env fallback BEDROCK_MANTLE_ENDPOINT.
-//   - bedrock_api_key: Amazon Bedrock API key sent as an Authorization bearer
-//     token (usually a Squadron secret; env fallback AWS_BEARER_TOKEN_BEDROCK /
+//     https://bedrock-mantle.us-east-1.api.aws (the API path is appended if absent).
+//     Env fallback BEDROCK_MANTLE_ENDPOINT.
+//   - bedrock_api_key: Amazon Bedrock API key sent as an Authorization bearer token
+//     (usually a Squadron secret; env fallback AWS_BEARER_TOKEN_BEDROCK /
 //     BEDROCK_API_KEY). Required.
-//   - model_id:        Responses-capable model id (default openai.gpt-oss-120b).
-//   - max_tokens:      max output tokens per turn -> max_output_tokens (default 8192).
+//   - model_id:        model id (default openai.gpt-oss-120b).
+//   - max_tokens:      max output tokens per turn (default 8192).
 //   - temperature:     sampling temperature. Sent only when set here or requested
-//     per-call, since some Responses models reject an explicit temperature.
+//     per-call, since some models reject an explicit temperature.
 func New(settings map[string]string) (provider.Provider, error) {
+	api := get(settings, "mantle_api", apiResponses)
+	switch api {
+	case apiResponses, apiChatCompletions:
+	case "chat": // convenience alias
+		api = apiChatCompletions
+	default:
+		return nil, fmt.Errorf("invalid mantle_api %q: must be %q or %q", api, apiResponses, apiChatCompletions)
+	}
+
 	apiKey := firstNonEmpty(settings["bedrock_api_key"], os.Getenv("AWS_BEARER_TOKEN_BEDROCK"), os.Getenv("BEDROCK_API_KEY"))
 	if apiKey == "" {
 		return nil, fmt.Errorf("bedrock-mantle: an Amazon Bedrock API key is required (set the bedrock_api_key setting or AWS_BEARER_TOKEN_BEDROCK)")
@@ -117,7 +139,8 @@ func New(settings map[string]string) (provider.Provider, error) {
 
 	return &Mantle{
 		http:        &http.Client{Timeout: defaultTimeout},
-		endpoint:    responsesURL(base),
+		endpoint:    endpointURL(base, apiPath(api)),
+		api:         api,
 		apiKey:      apiKey,
 		modelID:     get(settings, "model_id", defaultModelID),
 		maxTokens:   int32(maxTokens),
@@ -126,45 +149,42 @@ func New(settings map[string]string) (provider.Provider, error) {
 	}, nil
 }
 
-// responsesURL normalizes a base URL to the full Responses URL, tolerating a bare
-// host or a URL that already includes the responses path.
-func responsesURL(base string) string {
+// apiPath returns the HTTP path for the selected API mode.
+func apiPath(api string) string {
+	if api == apiChatCompletions {
+		return chatPath
+	}
+	return responsesPath
+}
+
+// endpointURL joins a base URL with an API path, tolerating a bare host or a URL
+// that already includes the path.
+func endpointURL(base, path string) string {
 	base = strings.TrimRight(base, "/")
-	if strings.HasSuffix(base, responsesPath) {
+	if strings.HasSuffix(base, path) {
 		return base
 	}
-	return base + responsesPath
+	return base + path
 }
 
 // Name implements provider.Provider.
 func (m *Mantle) Name() string { return "bedrock-mantle" }
 
-// Converse implements provider.Provider by mapping the neutral request onto a
-// Responses request, POSTing it to the mantle endpoint, and mapping the result
-// back.
+// Converse implements provider.Provider, dispatching to the configured API.
 func (m *Mantle) Converse(ctx context.Context, req *provider.Request) (*provider.Response, error) {
-	maxTokens := m.maxTokens
-	if req.MaxTokens > 0 {
-		maxTokens = int32(req.MaxTokens)
+	if m.api == apiChatCompletions {
+		return m.converseChat(ctx, req)
 	}
+	return m.converseResponses(ctx, req)
+}
 
-	body := wireRequest{
-		Model:           m.modelID,
-		Instructions:    req.System,
-		Input:           toInput(req.Messages),
-		Tools:           toWireTools(req.Tools),
-		MaxOutputTokens: maxTokens,
-		Store:           false,
-	}
-	if temp, ok := m.effectiveTemperature(req); ok {
-		body.Temperature = &temp
-	}
-
+// postJSON marshals body, POSTs it to the endpoint with auth headers, and returns
+// the response body, converting a non-2xx status into an error.
+func (m *Mantle) postJSON(ctx context.Context, body any) ([]byte, error) {
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock-mantle: marshal request: %w", err)
 	}
-
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, m.endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return nil, fmt.Errorf("bedrock-mantle: build request: %w", err)
@@ -186,7 +206,16 @@ func (m *Mantle) Converse(ctx context.Context, req *provider.Request) (*provider
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("bedrock-mantle (model %s): %s", m.modelID, describeError(resp.StatusCode, respBody))
 	}
-	return parseResponse(m.modelID, respBody)
+	return respBody, nil
+}
+
+// effectiveMaxTokens returns the max output tokens for a request (per-call override
+// wins over the configured default).
+func (m *Mantle) effectiveMaxTokens(req *provider.Request) int32 {
+	if req.MaxTokens > 0 {
+		return int32(req.MaxTokens)
+	}
+	return m.maxTokens
 }
 
 // effectiveTemperature returns the temperature to send and whether to send one at
@@ -199,194 +228,12 @@ func (m *Mantle) effectiveTemperature(req *provider.Request) (float32, bool) {
 	return m.temperature, m.setTemp
 }
 
-// --- OpenAI Responses wire types -------------------------------------------
-
-type wireRequest struct {
-	Model           string     `json:"model"`
-	Instructions    string     `json:"instructions,omitempty"`
-	Input           []any      `json:"input"`
-	Tools           []wireTool `json:"tools,omitempty"`
-	MaxOutputTokens int32      `json:"max_output_tokens"`
-	Temperature     *float32   `json:"temperature,omitempty"`
-	Store           bool       `json:"store"`
-}
-
-// Input item types. Each marshals exactly its own fields.
-type messageItem struct {
-	Type    string        `json:"type"` // "message"
-	Role    string        `json:"role"`
-	Content []contentPart `json:"content"`
-}
-
-type contentPart struct {
-	Type string `json:"type"` // "input_text" (user) or "output_text" (assistant)
-	Text string `json:"text"`
-}
-
-type functionCallItem struct {
-	Type      string `json:"type"` // "function_call"
-	CallID    string `json:"call_id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON-encoded object, as a string
-}
-
-type functionCallOutputItem struct {
-	Type   string `json:"type"` // "function_call_output"
-	CallID string `json:"call_id"`
-	Output string `json:"output"`
-}
-
-// wireTool is a Responses "function" tool (flat form: name/description/parameters
-// at the top level alongside type).
-type wireTool struct {
-	Type        string          `json:"type"` // "function"
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
-}
-
-type wireResponse struct {
-	Status            string `json:"status"`
-	IncompleteDetails *struct {
-		Reason string `json:"reason"`
-	} `json:"incomplete_details"`
-	Error *struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-	Output []struct {
-		Type    string `json:"type"`
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		CallID    string `json:"call_id"`
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"output"`
-	Usage struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
-}
-
 type wireError struct {
 	Error struct {
 		Type    string `json:"type"`
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
-}
-
-// toInput replays the neutral conversation as Responses input items. The agent
-// loop is stateless, so the full history is sent every turn.
-func toInput(msgs []provider.Message) []any {
-	items := make([]any, 0, len(msgs))
-	for _, m := range msgs {
-		partType := "input_text"
-		role := "user"
-		if m.Role == provider.RoleAssistant {
-			partType = "output_text"
-			role = "assistant"
-		}
-		for _, blk := range m.Blocks {
-			switch {
-			case blk.ToolUse != nil:
-				items = append(items, functionCallItem{
-					Type:      "function_call",
-					CallID:    blk.ToolUse.ID,
-					Name:      blk.ToolUse.Name,
-					Arguments: argsString(blk.ToolUse.Input),
-				})
-			case blk.ToolResult != nil:
-				out := blk.ToolResult.Content
-				if out == "" {
-					out = "(no output)"
-				}
-				items = append(items, functionCallOutputItem{
-					Type:   "function_call_output",
-					CallID: blk.ToolResult.ToolUseID,
-					Output: out,
-				})
-			default:
-				items = append(items, messageItem{
-					Type:    "message",
-					Role:    role,
-					Content: []contentPart{{Type: partType, Text: blk.Text}},
-				})
-			}
-		}
-	}
-	return items
-}
-
-func toWireTools(specs []provider.ToolSpec) []wireTool {
-	if len(specs) == 0 {
-		return nil
-	}
-	tools := make([]wireTool, 0, len(specs))
-	for _, s := range specs {
-		params := s.InputSchema
-		if len(params) == 0 {
-			params = json.RawMessage(`{"type":"object","properties":{}}`)
-		}
-		tools = append(tools, wireTool{
-			Type:        "function",
-			Name:        s.Name,
-			Description: s.Description,
-			Parameters:  params,
-		})
-	}
-	return tools
-}
-
-func parseResponse(modelID string, body []byte) (*provider.Response, error) {
-	var wr wireResponse
-	if err := json.Unmarshal(body, &wr); err != nil {
-		return nil, fmt.Errorf("bedrock-mantle: decode response: %w", err)
-	}
-	if wr.Status == "failed" && wr.Error != nil {
-		return nil, fmt.Errorf("bedrock-mantle (model %s): response failed: %s", modelID, wr.Error.Message)
-	}
-
-	resp := &provider.Response{}
-	resp.Usage.InputTokens = wr.Usage.InputTokens
-	resp.Usage.OutputTokens = wr.Usage.OutputTokens
-
-	var textParts []string
-	for _, item := range wr.Output {
-		switch item.Type {
-		case "message":
-			for _, c := range item.Content {
-				if c.Type == "output_text" {
-					textParts = append(textParts, c.Text)
-				}
-			}
-		case "function_call":
-			resp.ToolUses = append(resp.ToolUses, provider.ToolUse{
-				ID:    item.CallID,
-				Name:  item.Name,
-				Input: rawArgs(item.Arguments),
-			})
-		}
-	}
-	resp.Text = strings.Join(textParts, "\n")
-	resp.StopReason = stopReason(&wr, len(resp.ToolUses) > 0)
-	return resp, nil
-}
-
-// stopReason maps the Responses status onto the neutral stop reason. The agent
-// loop treats StopToolUse (with tool calls present) as "keep going", so tool calls
-// take precedence over the status.
-func stopReason(wr *wireResponse, hasToolCalls bool) provider.StopReason {
-	if hasToolCalls {
-		return provider.StopToolUse
-	}
-	if wr.Status == "incomplete" && wr.IncompleteDetails != nil && wr.IncompleteDetails.Reason == "max_output_tokens" {
-		return provider.StopMaxTokens
-	}
-	return provider.StopEndTurn
 }
 
 // describeError renders a non-2xx response. It reads the structured error message
@@ -407,8 +254,8 @@ func describeError(status int, body []byte) string {
 	return fmt.Sprintf("HTTP %d: %s", status, msg)
 }
 
-// argsString renders a tool-use input (a JSON object) as the string the Responses
-// API expects for function_call.arguments.
+// argsString renders a tool-use input (a JSON object) as the string the OpenAI
+// wire formats expect for function-call arguments.
 func argsString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return "{}"
@@ -416,14 +263,11 @@ func argsString(raw json.RawMessage) string {
 	return string(raw)
 }
 
-// rawArgs parses a function_call.arguments string (JSON text) into a RawMessage,
+// rawArgs parses a function-call arguments string (JSON text) into a RawMessage,
 // defaulting to an empty object when absent or invalid.
 func rawArgs(s string) json.RawMessage {
 	s = strings.TrimSpace(s)
-	if s == "" {
-		return json.RawMessage(`{}`)
-	}
-	if !json.Valid([]byte(s)) {
+	if s == "" || !json.Valid([]byte(s)) {
 		return json.RawMessage(`{}`)
 	}
 	return json.RawMessage(s)

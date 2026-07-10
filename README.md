@@ -99,11 +99,17 @@ review to the GitHub PR.
 ### `workspace_status`
 
 Inspect a session created by any phase. Returns status, repo, branch, PR, token
-usage, and the agent's final summary.
+usage, an **Agent Activity** transcript, and the agent's final summary.
 
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `session_id` | string | yes | The id returned by a phase tool |
+
+> **Agent Activity in results.** Every phase result (and `workspace_status`) now
+> includes an **Agent Activity** section — a bounded, turn-by-turn transcript of the
+> agent's responses — so what the model did surfaces in Squadron events, not only in
+> the plugin's stderr logs. It's size-capped to avoid flooding the orchestrator's
+> context; the complete, untruncated turn log always remains in the plugin logs.
 
 ### `cleanup_workspace`
 

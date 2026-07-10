@@ -27,6 +27,13 @@ type Options struct {
 	Logf func(format string, args ...any)
 }
 
+// TranscriptEntry is one assistant turn's text, captured so callers can surface
+// the agent's narrative (not just its final summary).
+type TranscriptEntry struct {
+	Turn int
+	Text string
+}
+
 // Result summarizes an agent run.
 type Result struct {
 	FinalText    string
@@ -34,6 +41,9 @@ type Result struct {
 	ToolCalls    int
 	InputTokens  int
 	OutputTokens int
+	// Transcript holds every assistant turn that produced text, in order. Callers
+	// use it to report what the agent did turn by turn.
+	Transcript []TranscriptEntry
 	// StoppedEarly is true if the run hit MaxIterations before the model finished.
 	StoppedEarly bool
 	// Truncated is true if the model's final turn was cut off by the token limit,
@@ -95,6 +105,7 @@ func Run(ctx context.Context, p provider.Provider, tools []Tool, directive strin
 		if strings.TrimSpace(resp.Text) != "" {
 			asstBlocks = append(asstBlocks, provider.TextBlock(resp.Text))
 			res.FinalText = resp.Text
+			res.Transcript = append(res.Transcript, TranscriptEntry{Turn: res.Iterations, Text: resp.Text})
 			if opts.Logf != nil {
 				opts.Logf("turn %d: %s", res.Iterations, oneLine(resp.Text, 200))
 			}

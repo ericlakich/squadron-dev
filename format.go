@@ -49,6 +49,10 @@ func formatPhase(title string, sess *Session, r *agent.Result, runErr error, not
 		fmt.Fprintf(&b, "\nNote: the agent loop ended with an error: %s\n", runErr.Error())
 	}
 
+	if r != nil {
+		writeAgentActivity(&b, r.Transcript)
+	}
+
 	b.WriteString("\n--- Agent Summary ---\n\n")
 	if r != nil && strings.TrimSpace(r.FinalText) != "" {
 		b.WriteString(r.FinalText)
@@ -59,6 +63,43 @@ func formatPhase(title string, sess *Session, r *agent.Result, runErr error, not
 
 	fmt.Fprintf(&b, "\nInspect this session later with workspace_status (session_id: %s).\n", sess.ID)
 	return b.String()
+}
+
+const (
+	// maxActivityChars bounds the Agent Activity section so a long run doesn't
+	// flood the tool result (and the orchestrator's context). Full detail always
+	// remains in the plugin logs.
+	maxActivityChars = 4000
+	maxActivityLine  = 240
+)
+
+// writeAgentActivity renders the agent's turn-by-turn responses as a bounded
+// bullet list. Each turn is condensed to a single line; rendering stops once the
+// size budget is reached, noting how many turns were captured in total.
+func writeAgentActivity(b *strings.Builder, transcript []agent.TranscriptEntry) {
+	if len(transcript) == 0 {
+		return
+	}
+	b.WriteString("\n--- Agent Activity ---\n\n")
+	used := 0
+	for i, e := range transcript {
+		line := fmt.Sprintf("- turn %d: %s\n", e.Turn, oneLineText(e.Text, maxActivityLine))
+		if used+len(line) > maxActivityChars && i > 0 {
+			fmt.Fprintf(b, "- … (%d turns total; see plugin logs for full detail)\n", len(transcript))
+			return
+		}
+		b.WriteString(line)
+		used += len(line)
+	}
+}
+
+// oneLineText collapses whitespace and truncates to a single readable line.
+func oneLineText(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // formatStatus renders a stored session for the workspace_status tool.
@@ -90,6 +131,7 @@ func formatStatus(sess *Session) string {
 	if sess.Error != "" {
 		fmt.Fprintf(&b, "Error: %s\n", sess.Error)
 	}
+	writeAgentActivity(&b, sess.Transcript)
 	if strings.TrimSpace(sess.Summary) != "" {
 		b.WriteString("\n--- Agent Summary ---\n\n")
 		b.WriteString(sess.Summary)

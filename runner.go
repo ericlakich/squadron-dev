@@ -303,6 +303,7 @@ func applyResult(sess *Session, r *agent.Result) {
 		return
 	}
 	sess.Summary = r.FinalText
+	sess.Transcript = r.Transcript
 	sess.Iterations = r.Iterations
 	sess.ToolCalls = r.ToolCalls
 	sess.InputTokens = r.InputTokens

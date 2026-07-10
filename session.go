@@ -8,27 +8,30 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/ericlakich/squadron-dev/agent"
 )
 
 // Session records the state of one phase run, persisted as session.json inside
 // the session directory so that workspace_status can report on it later.
 type Session struct {
-	ID           string    `json:"id"`
-	Phase        string    `json:"phase"`
-	Repo         string    `json:"repo,omitempty"`
-	Branch       string    `json:"branch,omitempty"`
-	BaseBranch   string    `json:"base_branch,omitempty"`
-	WorkspaceDir string    `json:"workspace_dir"`
-	Status       string    `json:"status"`
-	PRURL        string    `json:"pr_url,omitempty"`
-	Summary      string    `json:"summary,omitempty"`
-	Error        string    `json:"error,omitempty"`
-	Iterations   int       `json:"iterations,omitempty"`
-	ToolCalls    int       `json:"tool_calls,omitempty"`
-	InputTokens  int       `json:"input_tokens,omitempty"`
-	OutputTokens int       `json:"output_tokens,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string                  `json:"id"`
+	Phase        string                  `json:"phase"`
+	Repo         string                  `json:"repo,omitempty"`
+	Branch       string                  `json:"branch,omitempty"`
+	BaseBranch   string                  `json:"base_branch,omitempty"`
+	WorkspaceDir string                  `json:"workspace_dir"`
+	Status       string                  `json:"status"`
+	PRURL        string                  `json:"pr_url,omitempty"`
+	Summary      string                  `json:"summary,omitempty"`
+	Transcript   []agent.TranscriptEntry `json:"transcript,omitempty"`
+	Error        string                  `json:"error,omitempty"`
+	Iterations   int                     `json:"iterations,omitempty"`
+	ToolCalls    int                     `json:"tool_calls,omitempty"`
+	InputTokens  int                     `json:"input_tokens,omitempty"`
+	OutputTokens int                     `json:"output_tokens,omitempty"`
+	CreatedAt    time.Time               `json:"created_at"`
+	UpdatedAt    time.Time               `json:"updated_at"`
 }
 
 const sessionManifest = "session.json"

@@ -49,9 +49,6 @@ const (
 	// account and region.
 	defaultModelID   = "openai.gpt-oss-120b"
 	defaultMaxTokens = 8192
-	// defaultTimeout is a backstop for a single inference turn; the caller's
-	// context governs cancellation.
-	defaultTimeout = 10 * time.Minute
 	// maxResponseBytes caps how much of a response body we read so a misbehaving
 	// endpoint cannot exhaust memory.
 	maxResponseBytes = 32 << 20
@@ -69,14 +66,15 @@ func init() {
 
 // Mantle is a provider backed by the bedrock-mantle endpoint.
 type Mantle struct {
-	http        *http.Client
-	endpoint    string // full URL to POST (path depends on api)
-	api         string // apiResponses or apiChatCompletions
-	apiKey      string
-	modelID     string
-	maxTokens   int32
-	temperature float32
-	setTemp     bool // whether to send a temperature at all (some models reject it)
+	http           *http.Client
+	endpoint       string // full URL to POST (path depends on api)
+	api            string // apiResponses or apiChatCompletions
+	apiKey         string
+	modelID        string
+	maxTokens      int32
+	temperature    float32
+	setTemp        bool // whether to send a temperature at all (some models reject it)
+	requestTimeout time.Duration
 }
 
 // New builds a Mantle provider from settings.
@@ -96,6 +94,7 @@ type Mantle struct {
 //   - max_tokens:      max output tokens per turn (default 8192).
 //   - temperature:     sampling temperature. Sent only when set here or requested
 //     per-call, since some models reject an explicit temperature.
+//   - request_timeout_seconds: max wall-clock time for one model call (default 300).
 func New(settings map[string]string) (provider.Provider, error) {
 	api := get(settings, "mantle_api", apiResponses)
 	switch api {
@@ -137,15 +136,24 @@ func New(settings map[string]string) (provider.Provider, error) {
 		setTemp = true
 	}
 
+	requestTimeout, err := provider.ParseRequestTimeout(settings)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Mantle{
-		http:        &http.Client{Timeout: defaultTimeout},
-		endpoint:    endpointURL(base, apiPath(api)),
-		api:         api,
-		apiKey:      apiKey,
-		modelID:     get(settings, "model_id", defaultModelID),
-		maxTokens:   int32(maxTokens),
-		temperature: temp,
-		setTemp:     setTemp,
+		// A hardened transport (keep-alive probes + bounded setup timeouts) makes a
+		// dead or half-open connection fail fast; the per-request context deadline
+		// in postJSON is the overall bound.
+		http:           provider.HardenedHTTPClient(),
+		endpoint:       endpointURL(base, apiPath(api)),
+		api:            api,
+		apiKey:         apiKey,
+		modelID:        get(settings, "model_id", defaultModelID),
+		maxTokens:      int32(maxTokens),
+		temperature:    temp,
+		setTemp:        setTemp,
+		requestTimeout: requestTimeout,
 	}, nil
 }
 
@@ -185,7 +193,15 @@ func (m *Mantle) postJSON(ctx context.Context, body any) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bedrock-mantle: marshal request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, m.endpoint, bytes.NewReader(buf))
+	// Bound the call so a hung or half-open connection fails promptly instead of
+	// blocking a read until the command timeout. A heartbeat marks the call as
+	// alive in the logs while we wait.
+	callCtx, cancel := provider.WithRequestTimeout(ctx, m.requestTimeout)
+	defer cancel()
+	stop := provider.Heartbeat("bedrock-mantle")
+	defer stop()
+
+	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, m.endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return nil, fmt.Errorf("bedrock-mantle: build request: %w", err)
 	}
@@ -195,6 +211,9 @@ func (m *Mantle) postJSON(ctx context.Context, body any) ([]byte, error) {
 
 	resp, err := m.http.Do(httpReq)
 	if err != nil {
+		if callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return nil, fmt.Errorf("bedrock-mantle (model %s): request timed out after %s (raise request_timeout_seconds if the model needs longer)", m.modelID, m.requestTimeout)
+		}
 		return nil, fmt.Errorf("bedrock-mantle: post %s: %w", m.endpoint, err)
 	}
 	defer resp.Body.Close()

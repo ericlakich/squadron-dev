@@ -1,7 +1,12 @@
 package mantle
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ericlakich/squadron-dev/provider"
 )
@@ -101,6 +106,52 @@ func TestDescribeError(t *testing.T) {
 	}
 	if got := describeError(500, []byte("upstream boom")); got != "HTTP 500: upstream boom" {
 		t.Errorf("describeError fallback = %q", got)
+	}
+}
+
+func TestNewParsesRequestTimeout(t *testing.T) {
+	p, err := New(map[string]string{"bedrock_api_key": "k", "request_timeout_seconds": "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*Mantle).requestTimeout; got != 42*time.Second {
+		t.Errorf("requestTimeout = %s, want 42s", got)
+	}
+	if _, err := New(map[string]string{"bedrock_api_key": "k", "request_timeout_seconds": "0"}); err == nil {
+		t.Error("expected error for request_timeout_seconds=0")
+	}
+}
+
+// TestConverseTimesOutOnHungServer proves a stalled endpoint fails with a clear
+// timeout error rather than blocking indefinitely.
+func TestConverseTimesOutOnHungServer(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // hang until the test releases it, well past the request timeout
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p, err := New(map[string]string{
+		"mantle_endpoint":         srv.URL,
+		"bedrock_api_key":         "k",
+		"request_timeout_seconds": "1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = p.Converse(context.Background(), &provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Blocks: []provider.Block{provider.TextBlock("hi")}}},
+	})
+	if err == nil {
+		t.Fatal("expected a timeout error from the hung server")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error = %q, want it to mention a timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Converse took %s; the request timeout did not fire promptly", elapsed)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -52,6 +53,27 @@ func TestProviderRegistered(t *testing.T) {
 		if !found {
 			t.Fatalf("provider %q was not registered", want)
 		}
+	}
+}
+
+func TestNewParsesRequestTimeout(t *testing.T) {
+	p, err := New(map[string]string{"request_timeout_seconds": "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*Bedrock).requestTimeout; got != 42*time.Second {
+		t.Errorf("requestTimeout = %s, want 42s", got)
+	}
+	// Unset falls back to the shared default.
+	p2, err := New(map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p2.(*Bedrock).requestTimeout; got != provider.DefaultRequestTimeout {
+		t.Errorf("default requestTimeout = %s, want %s", got, provider.DefaultRequestTimeout)
+	}
+	if _, err := New(map[string]string{"request_timeout_seconds": "nope"}); err == nil {
+		t.Error("expected error for invalid request_timeout_seconds")
 	}
 }
 

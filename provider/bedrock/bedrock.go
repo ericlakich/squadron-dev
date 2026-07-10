@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -53,10 +54,11 @@ func init() {
 
 // Bedrock is a provider backed by the Amazon Bedrock Converse API.
 type Bedrock struct {
-	client      *bedrockruntime.Client
-	modelID     string
-	maxTokens   int32
-	temperature float32
+	client         *bedrockruntime.Client
+	modelID        string
+	maxTokens      int32
+	temperature    float32
+	requestTimeout time.Duration
 }
 
 // New builds a Bedrock provider from settings.
@@ -70,10 +72,23 @@ type Bedrock struct {
 //   - model_id:    Bedrock model id or inference profile id
 //   - max_tokens:  max output tokens per turn (default 8192)
 //   - temperature: sampling temperature (default 0)
+//   - request_timeout_seconds: max wall-clock time for one model call (default 300)
 func New(settings map[string]string) (provider.Provider, error) {
 	region := get(settings, "aws_region", defaultRegion)
 
-	loadOpts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
+	requestTimeout, err := provider.ParseRequestTimeout(settings)
+	if err != nil {
+		return nil, err
+	}
+
+	// A hardened HTTP client makes a dead or half-open Bedrock connection fail
+	// fast (keep-alive probes + bounded setup timeouts) rather than blocking a
+	// read forever; the per-request context deadline in Converse is the overall
+	// bound.
+	loadOpts := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(region),
+		awsconfig.WithHTTPClient(provider.HardenedHTTPClient()),
+	}
 	if profile := settings["aws_profile"]; profile != "" {
 		loadOpts = append(loadOpts, awsconfig.WithSharedConfigProfile(profile))
 	}
@@ -101,10 +116,11 @@ func New(settings map[string]string) (provider.Provider, error) {
 	}
 
 	return &Bedrock{
-		client:      bedrockruntime.NewFromConfig(cfg, bearerOptions(settings["bedrock_api_key"])...),
-		modelID:     get(settings, "model_id", defaultModelID),
-		maxTokens:   int32(maxTokens),
-		temperature: temp,
+		client:         bedrockruntime.NewFromConfig(cfg, bearerOptions(settings["bedrock_api_key"])...),
+		modelID:        get(settings, "model_id", defaultModelID),
+		maxTokens:      int32(maxTokens),
+		temperature:    temp,
+		requestTimeout: requestTimeout,
 	}, nil
 }
 
@@ -161,8 +177,19 @@ func (b *Bedrock) Converse(ctx context.Context, req *provider.Request) (*provide
 		in.ToolConfig = tc
 	}
 
-	out, err := b.client.Converse(ctx, in)
+	// Bound the call so a hung or half-open connection fails promptly instead of
+	// blocking a read until the command timeout (up to an hour). A heartbeat marks
+	// the call as alive in the logs while we wait.
+	callCtx, cancel := provider.WithRequestTimeout(ctx, b.requestTimeout)
+	defer cancel()
+	stop := provider.Heartbeat("bedrock-runtime")
+	defer stop()
+
+	out, err := b.client.Converse(callCtx, in)
 	if err != nil {
+		if callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return nil, fmt.Errorf("bedrock converse (model %s): timed out after %s (raise request_timeout_seconds if the model needs longer)", b.modelID, b.requestTimeout)
+		}
 		return nil, fmt.Errorf("bedrock converse (model %s): %w", b.modelID, err)
 	}
 	return fromBedrockOutput(out)

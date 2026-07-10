@@ -355,9 +355,10 @@ The settings are detailed below, and several ready-to-adapt configs follow in
 | `model_id` | `openai.gpt-oss-120b` (mantle) / `us.anthropic.claude-sonnet-4-20250514-v1:0` (runtime) | Model id. The form differs by provider — see [Providers](#providers). |
 | `max_tokens` | `8192` | Max output tokens per model turn (`max_output_tokens` on the Responses API). |
 | `temperature` | _(model default)_ | Sampling temperature. On `bedrock-mantle` it is sent only when set here, since some Responses models reject an explicit temperature. |
+| `request_timeout_seconds` | `300` | Max wall-clock time for a **single model call**. Bounds a hung or half-open Bedrock connection so it fails with a clear error instead of blocking. Raise it if a model legitimately needs longer per turn. |
 | `workspace_root` | `~/.squadron/localdev/workspaces` | Root directory for per-session workspaces. |
 | `max_iterations` | `50` | Max agent loop turns per phase before stopping. |
-| `command_timeout_seconds` | `300` | Per-command timeout for `run_command`. |
+| `command_timeout_seconds` | `300` | Per-command timeout for the agent's `run_command` **subprocesses only** — it does not bound model calls (see `request_timeout_seconds`). |
 | `max_output_bytes` | `60000` | Cap on file/command output returned to the model. |
 | `clone_depth` | `0` | Git clone depth. `0` = **full clone** (complete working tree and history). Set a positive integer for a faster shallow clone of very large repositories. |
 | `load_repo_context` | `true` | Load the repository's own instruction/convention files into the agent's context (see [Full-codebase access](#full-codebase-access)). |

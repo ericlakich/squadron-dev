@@ -393,6 +393,27 @@ when the requested change is already present on the branch, so a caller can tell
 > are tracked as follow-ups; today `summary`/`transcript` carry that content as
 > text.
 
+### Connection reliability
+
+Model calls stream (Bedrock `ConverseStream`; the mantle Responses/Chat Completions
+APIs with `stream: true`), which enables three layered guards against a hung or
+half-open Bedrock connection:
+
+1. **TCP keep-alive** — surfaces a genuinely dead peer as a connection error.
+2. **`stall_detection_seconds`** (default 90) — cancels the call if no stream
+   events arrive for that long. Because tokens stream continuously, an actively
+   generating turn keeps the timer reset, so this fires only on a real stall — much
+   faster than waiting out the full request timeout.
+3. **`request_timeout_seconds`** (default 300) — a hard ceiling on total call time.
+
+While a call is outstanding, the plugin appends heartbeat lines to `log_file` (and
+stderr) every 30s so you can watch progress live:
+
+```
+2026-07-10T05:05:31Z bedrock heartbeat session=develop-… elapsed=90s bytes_in=34556 idle=5s
+2026-07-10T05:06:01Z bedrock stalled session=develop-… idle=90s (>= stall_detection_seconds=90) — cancelling
+```
+
 ### Settings reference
 
 | Setting | Default | Description |
@@ -408,7 +429,9 @@ when the requested change is already present on the branch, so a caller can tell
 | `model_id` | `openai.gpt-oss-120b` (mantle) / `us.anthropic.claude-sonnet-4-20250514-v1:0` (runtime) | Model id. The form differs by provider — see [Providers](#providers). |
 | `max_tokens` | `8192` | Max output tokens per model turn (`max_output_tokens` on the Responses API). |
 | `temperature` | _(model default)_ | Sampling temperature. On `bedrock-mantle` it is sent only when set here, since some Responses models reject an explicit temperature. |
-| `request_timeout_seconds` | `300` | Max wall-clock time for a **single model call**. Bounds a hung or half-open Bedrock connection so it fails with a clear error instead of blocking. Raise it if a model legitimately needs longer per turn. |
+| `request_timeout_seconds` | `300` | Hard ceiling on wall-clock time for a **single model call**. Raise it if a model legitimately needs longer per turn (the stall guard catches dead connections sooner, so this can be generous). |
+| `stall_detection_seconds` | `90` | Cancel a streaming model call if **no stream events arrive** for this many seconds (a dead/half-open connection). `0` disables. Independent of `request_timeout_seconds`; safe because responses stream, so an active generation keeps resetting the timer. |
+| `log_file` | `~/.squadron/localdev/plugin.log` | Durable file the plugin appends heartbeat and stall events to (also emitted to stderr). Set to `-` to disable the file. |
 | `workspace_root` | `~/.squadron/localdev/workspaces` | Root directory for per-session workspaces. |
 | `max_iterations` | `50` | Max agent loop turns per phase before stopping. |
 | `command_timeout_seconds` | `300` | Per-command timeout for the agent's `run_command` **subprocesses only** — it does not bound model calls (see `request_timeout_seconds`). |

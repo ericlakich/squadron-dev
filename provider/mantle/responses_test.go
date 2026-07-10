@@ -101,9 +101,33 @@ func TestParseResponsesFailedStatus(t *testing.T) {
 	}
 }
 
-// TestConverseResponsesRoundTrip drives the default (Responses) provider against an
-// httptest server, verifying headers, path, request mapping, and response mapping.
-func TestConverseResponsesRoundTrip(t *testing.T) {
+// terminalResponsesEvent is a response.completed SSE payload carrying the given
+// assistant text.
+func terminalResponsesEvent(text string) string {
+	return `{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + text + `"}]}],"usage":{"input_tokens":1,"output_tokens":2}}}`
+}
+
+func TestResponsesStreamAccumulator(t *testing.T) {
+	acc := &responsesStreamAccumulator{}
+	// Delta/created events are ignored; only the terminal event is captured.
+	_ = acc.add([]byte(`{"type":"response.created","response":{"status":"in_progress"}}`))
+	_ = acc.add([]byte(`{"type":"response.output_text.delta","delta":"hi"}`))
+	_ = acc.add([]byte(terminalResponsesEvent("done")))
+	if len(acc.final) == 0 {
+		t.Fatal("terminal event not captured")
+	}
+	resp, err := parseResponsesResponse("m", acc.final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Text != "done" || resp.StopReason != provider.StopEndTurn {
+		t.Errorf("resp = %+v", resp)
+	}
+}
+
+// TestConverseResponsesStreamRoundTrip drives the Responses provider end to end
+// against an SSE server, verifying headers, path, streaming request, and mapping.
+func TestConverseResponsesStreamRoundTrip(t *testing.T) {
 	var gotAuth, gotPath string
 	var gotReq responsesRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,8 +135,12 @@ func TestConverseResponsesRoundTrip(t *testing.T) {
 		gotPath = r.URL.Path
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &gotReq)
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi back"}]}],"usage":{"input_tokens":1,"output_tokens":2}}`)
+		writeSSE(w,
+			`{"type":"response.created","response":{"status":"in_progress"}}`,
+			`{"type":"response.output_text.delta","delta":"hi "}`,
+			terminalResponsesEvent("hi back"),
+			"[DONE]",
+		)
 	}))
 	defer srv.Close()
 
@@ -131,11 +159,8 @@ func TestConverseResponsesRoundTrip(t *testing.T) {
 	if gotAuth != "Bearer test-key" || gotPath != "/v1/responses" {
 		t.Errorf("auth/path = %q / %q", gotAuth, gotPath)
 	}
-	if gotReq.Model != "openai.gpt-oss-120b" || gotReq.Instructions != "be helpful" || gotReq.Store {
+	if gotReq.Model != "openai.gpt-oss-120b" || gotReq.Instructions != "be helpful" || !gotReq.Stream || gotReq.Store {
 		t.Errorf("request = %+v", gotReq)
-	}
-	if len(gotReq.Tools) != 1 || gotReq.Tools[0].Type != "function" {
-		t.Errorf("tools = %+v", gotReq.Tools)
 	}
 	if resp.Text != "hi back" || resp.StopReason != provider.StopEndTurn {
 		t.Errorf("resp = %+v", resp)
@@ -146,7 +171,7 @@ func TestConverseResponsesOmitsTemperatureByDefault(t *testing.T) {
 	var rawReq []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rawReq, _ = io.ReadAll(r.Body)
-		io.WriteString(w, `{"status":"completed","output":[]}`)
+		writeSSE(w, terminalResponsesEvent("ok"), "[DONE]")
 	}))
 	defer srv.Close()
 

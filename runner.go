@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ericlakich/squadron-dev/agent"
+	"github.com/ericlakich/squadron-dev/provider"
 	"github.com/ericlakich/squadron-dev/vcs"
 	"github.com/ericlakich/squadron-dev/workspace"
 )
@@ -66,7 +67,7 @@ func (p *Plugin) runDevelop(ctx context.Context, params developParams) (string, 
 		MaxOutputBytes: p.cfg.MaxOutputBytes,
 	})
 
-	result, runErr := agent.Run(ctx, p.provider, tools,
+	result, runErr := agent.Run(provider.ContextWithSession(ctx, sess.ID), p.provider, tools,
 		buildDevelopDirective(params.Task, branch, params.Instructions),
 		agent.Options{System: developSystem, RepoContext: repoCtx, MaxIterations: p.cfg.MaxIterations, Logf: logf})
 	// Detect (and strip) the "already present" signal before recording the result
@@ -153,7 +154,7 @@ func (p *Plugin) runQA(ctx context.Context, params qaParams) (string, error) {
 		MaxOutputBytes: p.cfg.MaxOutputBytes,
 	})
 
-	result, runErr := agent.Run(ctx, p.provider, tools,
+	result, runErr := agent.Run(provider.ContextWithSession(ctx, sess.ID), p.provider, tools,
 		buildQADirective(target, params.Instructions),
 		agent.Options{System: qaSystem, RepoContext: repoCtx, MaxIterations: p.cfg.MaxIterations, Logf: logf})
 	applyResult(sess, result)
@@ -189,7 +190,7 @@ func (p *Plugin) runReview(ctx context.Context, params reviewParams) (string, er
 		MaxOutputBytes: p.cfg.MaxOutputBytes,
 	})
 
-	result, runErr := agent.Run(ctx, p.provider, tools,
+	result, runErr := agent.Run(provider.ContextWithSession(ctx, sess.ID), p.provider, tools,
 		buildReviewDirective(target, params.Instructions, diff, maxDiffBytes),
 		agent.Options{System: reviewSystem, RepoContext: repoCtx, MaxIterations: p.cfg.MaxIterations, Logf: logf})
 	applyResult(sess, result)

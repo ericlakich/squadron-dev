@@ -162,7 +162,7 @@ func (p *Plugin) Call(ctx context.Context, toolName string, payload string) (str
 		if err != nil {
 			return "", err
 		}
-		return formatStatus(sess), nil
+		return p.renderStatus(sess)
 	case "cleanup_workspace":
 		var params sessionParams
 		if err := json.Unmarshal([]byte(payload), &params); err != nil {

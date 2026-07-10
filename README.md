@@ -341,11 +341,64 @@ agent "engineer" {
 The settings are detailed below, and several ready-to-adapt configs follow in
 [Configuration examples](#configuration-examples).
 
+### Output format
+
+By default each phase tool returns a human-readable text summary (with `--- Agent
+Summary ---` / `--- Agent Activity ---` sections). Set `response_format = "json"` to
+get a typed payload instead, so an orchestrator can map fields directly into task
+outputs without asking an LLM to parse prose — eliminating paraphrase/fidelity
+bugs and saving tokens.
+
+```hcl
+settings {
+  provider        = "bedrock-mantle"
+  response_format = "json"
+}
+```
+
+`code_develop` then returns (fields are omitted when empty):
+
+```json
+{
+  "session_id": "develop-20260710-024233-24d704",
+  "phase": "develop",
+  "repo": "ZipTax/ziptax-docs",
+  "branch": "ZIP-1188/plan-badges",
+  "base_branch": "main",
+  "status": "completed",
+  "summary": "…the coding model's final response, verbatim…",
+  "transcript": ["…assistant turn 1…", "…assistant turn 2…"],
+  "pr_url": "https://github.com/ZipTax/ziptax-docs/pull/41",
+  "pr_number": 41,
+  "files_changed": ["fern/docs/pages/sdks/overview.mdx"],
+  "iterations": 10,
+  "tool_calls": 22,
+  "input_tokens": 93661,
+  "output_tokens": 835,
+  "created_at": "2026-07-10T02:42:33Z",
+  "updated_at": "2026-07-10T02:49:19Z"
+}
+```
+
+`workspace_status` returns the same shape from the persisted session. The `text`
+default is byte-for-byte unchanged, so existing configs are unaffected.
+
+**`status` values:** `completed`, `no_changes`, `already_completed`, `failed`.
+`already_completed` is distinct from `no_changes` — the develop agent reports it
+when the requested change is already present on the branch, so a caller can tell
+"no work was needed" from "no work was done" (and avoid re-running the mission).
+
+> **Not yet in the JSON payload:** structured QA/review `verdict`/`findings` and
+> per-line review comments require the coding model to emit structured output and
+> are tracked as follow-ups; today `summary`/`transcript` carry that content as
+> text.
+
 ### Settings reference
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `provider` | `bedrock-mantle` | Bedrock provider that powers the local agent: `bedrock-mantle` (mantle endpoint) or `bedrock-runtime` (Converse API). `bedrock` is an alias for `bedrock-runtime`. See [Providers](#providers). |
+| `response_format` | `text` | Phase-tool result format: `text` (human-readable summary, default) or `json` (typed payload). See [Output format](#output-format). |
 | `mantle_api` | `responses` | `bedrock-mantle` only. Which mantle API to use: `responses` (OpenAI Responses; OpenAI GPT models only) or `chat_completions` (OpenAI Chat Completions; broadly supported, incl. Qwen). |
 | `bedrock_api_key` | _(env fallback)_ | **Secret.** Amazon Bedrock API key. Wire to a Squadron secret. Required for `bedrock-mantle`; for `bedrock-runtime` it enables bearer-token auth. If unset, falls back to `AWS_BEARER_TOKEN_BEDROCK` / `BEDROCK_API_KEY` (and, for `bedrock-runtime`, the full AWS credential chain). |
 | `github_token` | _(env fallback)_ | **Secret.** GitHub token for clone/push/PR/review. Wire to a Squadron secret. If unset, falls back to `GITHUB_TOKEN` / `GH_TOKEN`. |

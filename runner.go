@@ -69,6 +69,9 @@ func (p *Plugin) runDevelop(ctx context.Context, params developParams) (string, 
 	result, runErr := agent.Run(ctx, p.provider, tools,
 		buildDevelopDirective(params.Task, branch, params.Instructions),
 		agent.Options{System: developSystem, RepoContext: repoCtx, MaxIterations: p.cfg.MaxIterations, Logf: logf})
+	// Detect (and strip) the "already present" signal before recording the result
+	// so the summary relayed to the caller stays clean.
+	alreadyComplete := stripAlreadyCompleteMarker(result)
 	applyResult(sess, result)
 	if runErr != nil {
 		// Persist whatever progress was made; surface the error in the summary.
@@ -80,9 +83,20 @@ func (p *Plugin) runDevelop(ctx context.Context, params developParams) (string, 
 		return p.fail(sess, err)
 	}
 	if !committed {
-		sess.Status = "no_changes"
+		if alreadyComplete {
+			sess.Status = statusAlreadyCompleted
+			_ = sess.save(p.cfg.WorkspaceRoot)
+			return p.render("LocalDev Development Complete", sess, result, runErr,
+				"The requested change is already present on the branch; no edits were needed.")
+		}
+		sess.Status = statusNoChanges
 		_ = sess.save(p.cfg.WorkspaceRoot)
-		return formatDevelop(sess, result, runErr, "The agent made no file changes."), nil
+		return p.render("LocalDev Development Complete", sess, result, runErr, "The agent made no file changes.")
+	}
+
+	// Record the files this run committed (best-effort; JSON output only).
+	if files, ferr := git.ChangedFilesInHEAD(ctx); ferr == nil {
+		sess.FilesChanged = files
 	}
 
 	var note string
@@ -111,9 +125,9 @@ func (p *Plugin) runDevelop(ctx context.Context, params developParams) (string, 
 		note = "Changes committed locally on branch " + branch + " (auto_push disabled)."
 	}
 
-	sess.Status = "completed"
+	sess.Status = statusCompleted
 	_ = sess.save(p.cfg.WorkspaceRoot)
-	return formatDevelop(sess, result, runErr, note), nil
+	return p.render("LocalDev Development Complete", sess, result, runErr, note)
 }
 
 // runQA runs the QA phase: check out the change (a PR or a branch) into a local
@@ -146,9 +160,9 @@ func (p *Plugin) runQA(ctx context.Context, params qaParams) (string, error) {
 	if runErr != nil {
 		sess.Error = runErr.Error()
 	}
-	sess.Status = "completed"
+	sess.Status = statusCompleted
 	_ = sess.save(p.cfg.WorkspaceRoot)
-	return formatPhase("LocalDev QA Review", sess, result, runErr, ""), nil
+	return p.render("LocalDev QA Review", sess, result, runErr, "")
 }
 
 // runReview runs the Review phase: check out the change, gather its diff, and let
@@ -200,9 +214,9 @@ func (p *Plugin) runReview(ctx context.Context, params reviewParams) (string, er
 		}
 	}
 
-	sess.Status = "completed"
+	sess.Status = statusCompleted
 	_ = sess.save(p.cfg.WorkspaceRoot)
-	return formatPhase("LocalDev Code Review", sess, result, runErr, strings.Join(notes, "\n")), nil
+	return p.render("LocalDev Code Review", sess, result, runErr, strings.Join(notes, "\n"))
 }
 
 // checkout clones the target repo into the session workspace and checks out the
@@ -292,7 +306,7 @@ func (p *Plugin) gatherDiff(ctx context.Context, sess *Session, params reviewPar
 
 // fail marks a session failed, persists it, and returns the error.
 func (p *Plugin) fail(sess *Session, err error) (string, error) {
-	sess.Status = "failed"
+	sess.Status = statusFailed
 	sess.Error = err.Error()
 	_ = sess.save(p.cfg.WorkspaceRoot)
 	return "", err

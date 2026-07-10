@@ -25,6 +25,7 @@ Rules:
 - Make the smallest change that fully satisfies the task. Do not refactor unrelated code.
 - Prefer edit_file for targeted changes; use write_file for new files or full rewrites.
 - Verify your work by actually running builds and tests, not by assuming.
+- If, after exploring, you find the requested change is ALREADY fully present on the branch, do not make any edits. Instead reply with a final message whose first line is exactly "STATUS: already_completed" followed by a one-line explanation of what already satisfies the request. This lets the caller distinguish "no work was needed" from "no work was done".
 - When you are done, stop calling tools and reply with a concise summary: what you changed, which files, how you verified it, and anything the reviewer should know.`
 
 const qaSystem = `You are a meticulous QA engineer reviewing a code change in a local git checkout.

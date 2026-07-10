@@ -17,6 +17,10 @@ const (
 	defaultMaxContextBytes = 32_768
 	defaultGitUserName     = "Squadron LocalDev"
 	defaultGitUserEmail    = "localdev@squadron.sh"
+
+	// response_format values.
+	responseFormatText = "text"
+	responseFormatJSON = "json"
 )
 
 // Settings is the parsed plugin configuration. Secret credentials — the Bedrock
@@ -26,6 +30,7 @@ const (
 // resolved here into GitHubToken.
 type Settings struct {
 	Provider       string
+	ResponseFormat string
 	WorkspaceRoot  string
 	MaxIterations  int
 	CommandTimeout time.Duration
@@ -58,6 +63,7 @@ func parseSettings(s map[string]string) (*Settings, error) {
 	}
 	cfg := &Settings{
 		Provider:        getOr(s, "provider", defaultProvider),
+		ResponseFormat:  getOr(s, "response_format", responseFormatText),
 		WorkspaceRoot:   getOr(s, "workspace_root", defaultWorkspaceRoot()),
 		MaxIterations:   defaultMaxIterations,
 		CommandTimeout:  defaultCommandTimeout,
@@ -71,6 +77,10 @@ func parseSettings(s map[string]string) (*Settings, error) {
 		LoadRepoContext: getBool(s, "load_repo_context", true),
 		MaxContextBytes: defaultMaxContextBytes,
 		Raw:             s,
+	}
+
+	if cfg.ResponseFormat != responseFormatText && cfg.ResponseFormat != responseFormatJSON {
+		return nil, fmt.Errorf("invalid response_format %q: must be %q or %q", cfg.ResponseFormat, responseFormatText, responseFormatJSON)
 	}
 
 	if v := s["clone_depth"]; v != "" {

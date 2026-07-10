@@ -7,11 +7,6 @@ import (
 	"github.com/ericlakich/squadron-dev/agent"
 )
 
-// formatDevelop renders the result of the Code Development phase.
-func formatDevelop(sess *Session, r *agent.Result, runErr error, note string) string {
-	return formatPhase("LocalDev Development Complete", sess, r, runErr, note)
-}
-
 // formatPhase renders a phase result into a readable text summary that the
 // Squadron agent consumes as the tool result.
 func formatPhase(title string, sess *Session, r *agent.Result, runErr error, note string) string {
@@ -91,6 +86,20 @@ func writeAgentActivity(b *strings.Builder, transcript []agent.TranscriptEntry) 
 		b.WriteString(line)
 		used += len(line)
 	}
+}
+
+// boundedTranscript returns the leading transcript entries that fit within the
+// size budget (measured on their one-line form), plus the count omitted. It gives
+// the JSON renderer the same bounding the text Agent Activity section applies.
+func boundedTranscript(entries []agent.TranscriptEntry) (kept []agent.TranscriptEntry, omitted int) {
+	used := 0
+	for i, e := range entries {
+		used += len(oneLineText(e.Text, maxActivityLine))
+		if used > maxActivityChars && i > 0 {
+			return entries[:i], len(entries) - i
+		}
+	}
+	return entries, 0
 }
 
 // oneLineText collapses whitespace and truncates to a single readable line.

@@ -25,6 +25,7 @@ type Session struct {
 	PRURL        string                  `json:"pr_url,omitempty"`
 	Summary      string                  `json:"summary,omitempty"`
 	Transcript   []agent.TranscriptEntry `json:"transcript,omitempty"`
+	FilesChanged []string                `json:"files_changed,omitempty"`
 	Error        string                  `json:"error,omitempty"`
 	Iterations   int                     `json:"iterations,omitempty"`
 	ToolCalls    int                     `json:"tool_calls,omitempty"`
@@ -45,7 +46,7 @@ func newSession(root, phase string) *Session {
 		ID:           id,
 		Phase:        phase,
 		WorkspaceDir: filepath.Join(root, id, "repo"),
-		Status:       "running",
+		Status:       statusRunning,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

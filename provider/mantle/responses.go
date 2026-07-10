@@ -9,7 +9,10 @@ import (
 	"github.com/ericlakich/squadron-dev/provider"
 )
 
-// converseResponses runs one turn against the OpenAI-compatible Responses API.
+// converseResponses runs one streaming turn against the OpenAI-compatible
+// Responses API. It streams for stall detection but reconstructs the result from
+// the terminal event, whose embedded response object carries the full output and
+// usage — reusing the non-streaming parser.
 func (m *Mantle) converseResponses(ctx context.Context, req *provider.Request) (*provider.Response, error) {
 	body := responsesRequest{
 		Model:           m.modelID,
@@ -18,15 +21,44 @@ func (m *Mantle) converseResponses(ctx context.Context, req *provider.Request) (
 		Tools:           toResponsesTools(req.Tools),
 		MaxOutputTokens: m.effectiveMaxTokens(req),
 		Store:           false,
+		Stream:          true,
 	}
 	if temp, ok := m.effectiveTemperature(req); ok {
 		body.Temperature = &temp
 	}
-	respBody, err := m.postJSON(ctx, body)
-	if err != nil {
+
+	acc := &responsesStreamAccumulator{}
+	if err := m.stream(ctx, body, acc.add); err != nil {
 		return nil, err
 	}
-	return parseResponsesResponse(m.modelID, respBody)
+	if len(acc.final) == 0 {
+		return nil, fmt.Errorf("bedrock-mantle (model %s): stream ended without a terminal response event", m.modelID)
+	}
+	return parseResponsesResponse(m.modelID, acc.final)
+}
+
+// responsesStreamAccumulator captures the response object from the terminal
+// streaming event (response.completed / .incomplete / .failed). Intermediate
+// delta events only need to keep the stall watchdog fed, which m.stream handles.
+type responsesStreamAccumulator struct {
+	final json.RawMessage
+}
+
+func (a *responsesStreamAccumulator) add(data []byte) error {
+	var ev struct {
+		Type     string          `json:"type"`
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(data, &ev); err != nil {
+		return nil // ignore events we don't model (text/argument deltas, etc.)
+	}
+	switch ev.Type {
+	case "response.completed", "response.incomplete", "response.failed":
+		if len(ev.Response) > 0 {
+			a.final = ev.Response
+		}
+	}
+	return nil
 }
 
 type responsesRequest struct {
@@ -37,6 +69,7 @@ type responsesRequest struct {
 	MaxOutputTokens int32           `json:"max_output_tokens"`
 	Temperature     *float32        `json:"temperature,omitempty"`
 	Store           bool            `json:"store"`
+	Stream          bool            `json:"stream,omitempty"`
 }
 
 // Input item types. Each marshals exactly its own fields.

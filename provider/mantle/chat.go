@@ -9,32 +9,139 @@ import (
 	"github.com/ericlakich/squadron-dev/provider"
 )
 
-// converseChat runs one turn against the OpenAI-compatible Chat Completions API.
-// This is the path for models that support Chat Completions but not the Responses
-// API (e.g. Qwen).
+// converseChat runs one streaming turn against the OpenAI-compatible Chat
+// Completions API. This is the path for models that support Chat Completions but
+// not the Responses API (e.g. Qwen). Streaming feeds the stall watchdog; the
+// delta chunks are reassembled into a single response.
 func (m *Mantle) converseChat(ctx context.Context, req *provider.Request) (*provider.Response, error) {
 	body := chatRequest{
-		Model:     m.modelID,
-		Messages:  toChatMessages(req.System, req.Messages),
-		Tools:     toChatTools(req.Tools),
-		MaxTokens: m.effectiveMaxTokens(req),
+		Model:         m.modelID,
+		Messages:      toChatMessages(req.System, req.Messages),
+		Tools:         toChatTools(req.Tools),
+		MaxTokens:     m.effectiveMaxTokens(req),
+		Stream:        true,
+		StreamOptions: &chatStreamOptions{IncludeUsage: true},
 	}
 	if temp, ok := m.effectiveTemperature(req); ok {
 		body.Temperature = &temp
 	}
-	respBody, err := m.postJSON(ctx, body)
-	if err != nil {
+
+	acc := &chatStreamAccumulator{}
+	if err := m.stream(ctx, body, acc.add); err != nil {
 		return nil, err
 	}
-	return parseChatResponse(m.modelID, respBody)
+	return acc.result(), nil
 }
 
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Tools       []chatTool    `json:"tools,omitempty"`
-	MaxTokens   int32         `json:"max_tokens,omitempty"`
-	Temperature *float32      `json:"temperature,omitempty"`
+	Model         string             `json:"model"`
+	Messages      []chatMessage      `json:"messages"`
+	Tools         []chatTool         `json:"tools,omitempty"`
+	MaxTokens     int32              `json:"max_tokens,omitempty"`
+	Temperature   *float32           `json:"temperature,omitempty"`
+	Stream        bool               `json:"stream,omitempty"`
+	StreamOptions *chatStreamOptions `json:"stream_options,omitempty"`
+}
+
+// chatStreamOptions asks the endpoint to include a final usage chunk in the
+// stream (OpenAI omits usage from streamed responses otherwise).
+type chatStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// chatStreamAccumulator reassembles Chat Completions delta chunks: content is
+// concatenated, tool calls are assembled by index (id/name from the first chunk,
+// argument fragments appended), and finish_reason / usage come from later chunks.
+type chatStreamAccumulator struct {
+	content strings.Builder
+	calls   map[int]*chatCallAccumulator
+	order   []int
+	finish  string
+	inTok   int
+	outTok  int
+}
+
+type chatCallAccumulator struct {
+	id   string
+	name string
+	args strings.Builder
+}
+
+func (a *chatStreamAccumulator) add(data []byte) error {
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &chunk); err != nil {
+		return fmt.Errorf("bedrock-mantle: decode chat chunk: %w", err)
+	}
+	if chunk.Error != nil && chunk.Error.Message != "" {
+		return fmt.Errorf("bedrock-mantle: %s", chunk.Error.Message)
+	}
+	if chunk.Usage != nil {
+		a.inTok = chunk.Usage.PromptTokens
+		a.outTok = chunk.Usage.CompletionTokens
+	}
+	for _, ch := range chunk.Choices {
+		a.content.WriteString(ch.Delta.Content)
+		if ch.FinishReason != "" {
+			a.finish = ch.FinishReason
+		}
+		for _, tc := range ch.Delta.ToolCalls {
+			if a.calls == nil {
+				a.calls = map[int]*chatCallAccumulator{}
+			}
+			c := a.calls[tc.Index]
+			if c == nil {
+				c = &chatCallAccumulator{}
+				a.calls[tc.Index] = c
+				a.order = append(a.order, tc.Index)
+			}
+			if tc.ID != "" {
+				c.id = tc.ID
+			}
+			if tc.Function.Name != "" {
+				c.name = tc.Function.Name
+			}
+			c.args.WriteString(tc.Function.Arguments)
+		}
+	}
+	return nil
+}
+
+func (a *chatStreamAccumulator) result() *provider.Response {
+	resp := &provider.Response{Text: a.content.String()}
+	resp.Usage.InputTokens = a.inTok
+	resp.Usage.OutputTokens = a.outTok
+	for _, idx := range a.order {
+		c := a.calls[idx]
+		resp.ToolUses = append(resp.ToolUses, provider.ToolUse{
+			ID:    c.id,
+			Name:  c.name,
+			Input: rawArgs(c.args.String()),
+		})
+	}
+	resp.StopReason = chatStopReason(a.finish, len(resp.ToolUses) > 0)
+	return resp
 }
 
 type chatMessage struct {
@@ -67,29 +174,6 @@ type chatToolDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
-}
-
-type chatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
 }
 
 // toChatMessages maps the system prompt and neutral conversation onto Chat
@@ -153,36 +237,6 @@ func toChatTools(specs []provider.ToolSpec) []chatTool {
 		})
 	}
 	return tools
-}
-
-func parseChatResponse(modelID string, body []byte) (*provider.Response, error) {
-	var cr chatResponse
-	if err := json.Unmarshal(body, &cr); err != nil {
-		return nil, fmt.Errorf("bedrock-mantle: decode response: %w", err)
-	}
-	if cr.Error != nil && cr.Error.Message != "" {
-		return nil, fmt.Errorf("bedrock-mantle (model %s): %s", modelID, cr.Error.Message)
-	}
-
-	resp := &provider.Response{}
-	resp.Usage.InputTokens = cr.Usage.PromptTokens
-	resp.Usage.OutputTokens = cr.Usage.CompletionTokens
-
-	if len(cr.Choices) == 0 {
-		resp.StopReason = provider.StopEndTurn
-		return resp, nil
-	}
-	choice := cr.Choices[0]
-	resp.Text = choice.Message.Content
-	for _, tc := range choice.Message.ToolCalls {
-		resp.ToolUses = append(resp.ToolUses, provider.ToolUse{
-			ID:    tc.ID,
-			Name:  tc.Function.Name,
-			Input: rawArgs(tc.Function.Arguments),
-		})
-	}
-	resp.StopReason = chatStopReason(choice.FinishReason, len(resp.ToolUses) > 0)
-	return resp, nil
 }
 
 // chatStopReason maps the Chat Completions finish_reason onto the neutral stop

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 )
@@ -15,11 +14,6 @@ import (
 // turning a hung connection into a prompt, actionable error instead of a process
 // that blocks for the whole command timeout (up to an hour).
 const DefaultRequestTimeout = 300 * time.Second
-
-// heartbeatInterval is how often an outstanding call reports that it is still
-// waiting, so operators can tell "the model is still working" from "the connection
-// is dead."
-const heartbeatInterval = 30 * time.Second
 
 // HardenedTransport returns an *http.Transport that fails fast on a dead or
 // half-open connection instead of blocking forever on a silent peer:
@@ -76,26 +70,4 @@ func WithRequestTimeout(ctx context.Context, d time.Duration) (context.Context, 
 		d = DefaultRequestTimeout
 	}
 	return context.WithTimeout(ctx, d)
-}
-
-// Heartbeat logs to stderr every heartbeatInterval that a call is still
-// outstanding. It returns a stop function to call (typically via defer) once the
-// request completes.
-func Heartbeat(label string) (stop func()) {
-	done := make(chan struct{})
-	go func() {
-		start := time.Now()
-		t := time.NewTicker(heartbeatInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				fmt.Fprintf(os.Stderr, "[%s] still waiting for a response (%s elapsed)\n",
-					label, time.Since(start).Round(time.Second))
-			}
-		}
-	}()
-	return func() { close(done) }
 }

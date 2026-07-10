@@ -2,6 +2,7 @@ package mantle
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -106,6 +107,52 @@ func TestDescribeError(t *testing.T) {
 	}
 	if got := describeError(500, []byte("upstream boom")); got != "HTTP 500: upstream boom" {
 		t.Errorf("describeError fallback = %q", got)
+	}
+}
+
+func TestNewParsesStallTimeout(t *testing.T) {
+	p, err := New(map[string]string{"bedrock_api_key": "k", "stall_detection_seconds": "10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p // stall is held on the guard; parsing success is the assertion
+	if _, err := New(map[string]string{"bedrock_api_key": "k", "stall_detection_seconds": "-1"}); err == nil {
+		t.Error("expected error for negative stall_detection_seconds")
+	}
+	if _, err := New(map[string]string{"bedrock_api_key": "k", "stall_detection_seconds": "0"}); err != nil {
+		t.Errorf("0 should be valid (disables stall): %v", err)
+	}
+}
+
+// TestConverseStallsOnIdleStream proves a stream that goes idle mid-flight is
+// cancelled with ErrStalled well before the (much larger) request timeout.
+func TestConverseStallsOnIdleStream(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(w, `{"type":"response.created","response":{"status":"in_progress"}}`)
+		<-release // stream then goes silent without a terminal event
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	p, err := New(map[string]string{
+		"mantle_endpoint":         srv.URL,
+		"bedrock_api_key":         "k",
+		"stall_detection_seconds": "1",
+		"request_timeout_seconds": "30",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = p.Converse(context.Background(), &provider.Request{
+		Messages: []provider.Message{{Role: provider.RoleUser, Blocks: []provider.Block{provider.TextBlock("hi")}}},
+	})
+	if err == nil || !errors.Is(err, provider.ErrStalled) {
+		t.Fatalf("expected ErrStalled, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("stall detection too slow: %s (should be near 1s, not the 30s request timeout)", elapsed)
 	}
 }
 

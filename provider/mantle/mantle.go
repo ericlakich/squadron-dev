@@ -27,9 +27,11 @@
 package mantle
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,6 +77,7 @@ type Mantle struct {
 	temperature    float32
 	setTemp        bool // whether to send a temperature at all (some models reject it)
 	requestTimeout time.Duration
+	guard          *provider.Guard
 }
 
 // New builds a Mantle provider from settings.
@@ -94,7 +97,9 @@ type Mantle struct {
 //   - max_tokens:      max output tokens per turn (default 8192).
 //   - temperature:     sampling temperature. Sent only when set here or requested
 //     per-call, since some models reject an explicit temperature.
-//   - request_timeout_seconds: max wall-clock time for one model call (default 300).
+//   - request_timeout_seconds: hard ceiling on one model call (default 300).
+//   - stall_detection_seconds: cancel if the stream is idle this long (default 90, 0 disables).
+//   - log_file: durable path for heartbeat/stall logs (default ~/.squadron/localdev/plugin.log).
 func New(settings map[string]string) (provider.Provider, error) {
 	api := get(settings, "mantle_api", apiResponses)
 	switch api {
@@ -140,6 +145,11 @@ func New(settings map[string]string) (provider.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	stall, err := provider.ParseStallTimeout(settings)
+	if err != nil {
+		return nil, err
+	}
+	guard := provider.NewGuard(stall, provider.NewEventLogFromSettings(settings))
 
 	return &Mantle{
 		// A hardened transport (keep-alive probes + bounded setup timeouts) makes a
@@ -154,6 +164,7 @@ func New(settings map[string]string) (provider.Provider, error) {
 		temperature:    temp,
 		setTemp:        setTemp,
 		requestTimeout: requestTimeout,
+		guard:          guard,
 	}, nil
 }
 
@@ -186,46 +197,96 @@ func (m *Mantle) Converse(ctx context.Context, req *provider.Request) (*provider
 	return m.converseResponses(ctx, req)
 }
 
-// postJSON marshals body, POSTs it to the endpoint with auth headers, and returns
-// the response body, converting a non-2xx status into an error.
-func (m *Mantle) postJSON(ctx context.Context, body any) ([]byte, error) {
+// errStreamDone is the internal sentinel for the SSE "[DONE]" terminator.
+var errStreamDone = errors.New("stream done")
+
+// stream POSTs a streaming request and invokes handle for each Server-Sent Events
+// data payload. request_timeout_seconds bounds the whole call; the stall guard
+// cancels sooner if no event arrives for stall_detection_seconds (a dead peer),
+// while an actively streaming generation keeps resetting the idle timer.
+func (m *Mantle) stream(ctx context.Context, body any, handle func(data []byte) error) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("bedrock-mantle: marshal request: %w", err)
+		return fmt.Errorf("bedrock-mantle: marshal request: %w", err)
 	}
-	// Bound the call so a hung or half-open connection fails promptly instead of
-	// blocking a read until the command timeout. A heartbeat marks the call as
-	// alive in the logs while we wait.
 	callCtx, cancel := provider.WithRequestTimeout(ctx, m.requestTimeout)
 	defer cancel()
-	stop := provider.Heartbeat("bedrock-mantle")
-	defer stop()
+	gctx, gc := m.guard.Start(callCtx, provider.SessionFromContext(ctx))
+	defer gc.Finish()
 
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, m.endpoint, bytes.NewReader(buf))
+	req, err := http.NewRequestWithContext(gctx, http.MethodPost, m.endpoint, bytes.NewReader(buf))
 	if err != nil {
-		return nil, fmt.Errorf("bedrock-mantle: build request: %w", err)
+		return fmt.Errorf("bedrock-mantle: build request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+m.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+m.apiKey)
 
-	resp, err := m.http.Do(httpReq)
+	resp, err := m.http.Do(req)
 	if err != nil {
-		if callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			return nil, fmt.Errorf("bedrock-mantle (model %s): request timed out after %s (raise request_timeout_seconds if the model needs longer)", m.modelID, m.requestTimeout)
-		}
-		return nil, fmt.Errorf("bedrock-mantle: post %s: %w", m.endpoint, err)
+		return m.streamError(err, gc, callCtx, ctx)
 	}
 	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return nil, fmt.Errorf("bedrock-mantle: read response: %w", err)
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("bedrock-mantle (model %s): %s", m.modelID, describeError(resp.StatusCode, respBody))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		return fmt.Errorf("bedrock-mantle (model %s): %s", m.modelID, describeError(resp.StatusCode, b))
 	}
-	return respBody, nil
+	gc.Touch(0) // headers arrived; reset the idle timer for the streaming phase
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
+	var data strings.Builder
+	dispatch := func() error {
+		if data.Len() == 0 {
+			return nil
+		}
+		payload := strings.TrimSpace(data.String())
+		data.Reset()
+		gc.Touch(len(payload))
+		if payload == "[DONE]" {
+			return errStreamDone
+		}
+		return handle([]byte(payload))
+	}
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" { // blank line terminates an event
+			if err := dispatch(); err != nil {
+				if err == errStreamDone {
+					return nil
+				}
+				return err
+			}
+			continue
+		}
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(strings.TrimPrefix(after, " "))
+		}
+		// Other SSE fields (event:, id:, ":" comments) are ignored.
+	}
+	if err := sc.Err(); err != nil {
+		return m.streamError(err, gc, callCtx, ctx)
+	}
+	// Flush a trailing event not followed by a blank line.
+	if err := dispatch(); err != nil && err != errStreamDone {
+		return err
+	}
+	return nil
+}
+
+// streamError classifies a streaming failure as a stall, a request-timeout, or a
+// generic error.
+func (m *Mantle) streamError(err error, gc *provider.Call, callCtx, ctx context.Context) error {
+	if gc.Stalled() {
+		return fmt.Errorf("bedrock-mantle (model %s): %w", m.modelID, gc.Err())
+	}
+	if callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return fmt.Errorf("bedrock-mantle (model %s): request timed out after %s (raise request_timeout_seconds if the model needs longer)", m.modelID, m.requestTimeout)
+	}
+	return fmt.Errorf("bedrock-mantle: post %s: %w", m.endpoint, err)
 }
 
 // effectiveMaxTokens returns the max output tokens for a request (per-call override

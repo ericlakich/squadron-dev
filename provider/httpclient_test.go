@@ -70,9 +70,3 @@ func TestWithRequestTimeout(t *testing.T) {
 		t.Errorf("default deadline remaining = %s, want ~%s", remaining, DefaultRequestTimeout)
 	}
 }
-
-func TestHeartbeatStops(t *testing.T) {
-	stop := Heartbeat("test")
-	// Should return promptly and not panic; the goroutine exits on stop.
-	stop()
-}

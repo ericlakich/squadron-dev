@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -59,6 +58,7 @@ type Bedrock struct {
 	maxTokens      int32
 	temperature    float32
 	requestTimeout time.Duration
+	guard          *provider.Guard
 }
 
 // New builds a Bedrock provider from settings.
@@ -72,7 +72,9 @@ type Bedrock struct {
 //   - model_id:    Bedrock model id or inference profile id
 //   - max_tokens:  max output tokens per turn (default 8192)
 //   - temperature: sampling temperature (default 0)
-//   - request_timeout_seconds: max wall-clock time for one model call (default 300)
+//   - request_timeout_seconds: hard ceiling on one model call (default 300)
+//   - stall_detection_seconds: cancel if the stream is idle this long (default 90, 0 disables)
+//   - log_file: durable path for heartbeat/stall logs (default ~/.squadron/localdev/plugin.log)
 func New(settings map[string]string) (provider.Provider, error) {
 	region := get(settings, "aws_region", defaultRegion)
 
@@ -80,6 +82,11 @@ func New(settings map[string]string) (provider.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	stall, err := provider.ParseStallTimeout(settings)
+	if err != nil {
+		return nil, err
+	}
+	guard := provider.NewGuard(stall, provider.NewEventLogFromSettings(settings))
 
 	// A hardened HTTP client makes a dead or half-open Bedrock connection fail
 	// fast (keep-alive probes + bounded setup timeouts) rather than blocking a
@@ -121,6 +128,7 @@ func New(settings map[string]string) (provider.Provider, error) {
 		maxTokens:      int32(maxTokens),
 		temperature:    temp,
 		requestTimeout: requestTimeout,
+		guard:          guard,
 	}, nil
 }
 
@@ -144,8 +152,10 @@ func bearerOptions(key string) []func(*bedrockruntime.Options) {
 // Name implements provider.Provider.
 func (b *Bedrock) Name() string { return "bedrock-runtime" }
 
-// Converse implements provider.Provider by mapping the neutral request onto a
-// Bedrock ConverseInput, invoking the model, and mapping the result back.
+// Converse implements provider.Provider using the Bedrock ConverseStream API.
+// Streaming lets a per-event stall watchdog cancel a genuinely dead connection
+// (no events for stall_detection_seconds) without penalizing a legitimately long
+// generation, whose tokens keep the stream active.
 func (b *Bedrock) Converse(ctx context.Context, req *provider.Request) (*provider.Response, error) {
 	maxTokens := b.maxTokens
 	if req.MaxTokens > 0 {
@@ -156,7 +166,7 @@ func (b *Bedrock) Converse(ctx context.Context, req *provider.Request) (*provide
 		temp = req.Temperature
 	}
 
-	in := &bedrockruntime.ConverseInput{
+	in := &bedrockruntime.ConverseStreamInput{
 		ModelId:  aws.String(b.modelID),
 		Messages: toBedrockMessages(req.Messages),
 		InferenceConfig: &types.InferenceConfiguration{
@@ -177,22 +187,43 @@ func (b *Bedrock) Converse(ctx context.Context, req *provider.Request) (*provide
 		in.ToolConfig = tc
 	}
 
-	// Bound the call so a hung or half-open connection fails promptly instead of
-	// blocking a read until the command timeout (up to an hour). A heartbeat marks
-	// the call as alive in the logs while we wait.
+	// request_timeout_seconds bounds the whole call; the stall guard cancels sooner
+	// if the stream goes idle (a dead peer) while leaving active generations alone.
 	callCtx, cancel := provider.WithRequestTimeout(ctx, b.requestTimeout)
 	defer cancel()
-	stop := provider.Heartbeat("bedrock-runtime")
-	defer stop()
+	gctx, gc := b.guard.Start(callCtx, provider.SessionFromContext(ctx))
+	defer gc.Finish()
 
-	out, err := b.client.Converse(callCtx, in)
+	out, err := b.client.ConverseStream(gctx, in)
 	if err != nil {
-		if callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			return nil, fmt.Errorf("bedrock converse (model %s): timed out after %s (raise request_timeout_seconds if the model needs longer)", b.modelID, b.requestTimeout)
-		}
-		return nil, fmt.Errorf("bedrock converse (model %s): %w", b.modelID, err)
+		return nil, b.streamError(err, gc, callCtx, ctx)
 	}
-	return fromBedrockOutput(out)
+
+	acc := &converseAccumulator{}
+	stream := out.GetStream()
+	defer stream.Close()
+	for event := range stream.Events() {
+		gc.Touch(eventSize(event))
+		if err := acc.add(event); err != nil {
+			return nil, fmt.Errorf("bedrock converse (model %s): %w", b.modelID, err)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, b.streamError(err, gc, callCtx, ctx)
+	}
+	return acc.result(), nil
+}
+
+// streamError classifies a ConverseStream failure as a stall, a request-timeout,
+// or a generic error.
+func (b *Bedrock) streamError(err error, gc *provider.Call, callCtx, ctx context.Context) error {
+	if gc.Stalled() {
+		return fmt.Errorf("bedrock converse (model %s): %w", b.modelID, gc.Err())
+	}
+	if callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return fmt.Errorf("bedrock converse (model %s): timed out after %s (raise request_timeout_seconds if the model needs longer)", b.modelID, b.requestTimeout)
+	}
+	return fmt.Errorf("bedrock converse (model %s): %w", b.modelID, err)
 }
 
 func toBedrockMessages(msgs []provider.Message) []types.Message {
@@ -259,39 +290,6 @@ func toToolConfig(specs []provider.ToolSpec) (*types.ToolConfiguration, error) {
 		})
 	}
 	return &types.ToolConfiguration{Tools: tools}, nil
-}
-
-func fromBedrockOutput(out *bedrockruntime.ConverseOutput) (*provider.Response, error) {
-	resp := &provider.Response{StopReason: mapStopReason(out.StopReason)}
-	if out.Usage != nil {
-		resp.Usage.InputTokens = int(aws.ToInt32(out.Usage.InputTokens))
-		resp.Usage.OutputTokens = int(aws.ToInt32(out.Usage.OutputTokens))
-	}
-
-	msg, ok := out.Output.(*types.ConverseOutputMemberMessage)
-	if !ok {
-		return resp, nil
-	}
-
-	var textParts []string
-	for _, blk := range msg.Value.Content {
-		switch v := blk.(type) {
-		case *types.ContentBlockMemberText:
-			textParts = append(textParts, v.Value)
-		case *types.ContentBlockMemberToolUse:
-			input, err := documentToRaw(v.Value.Input)
-			if err != nil {
-				return nil, fmt.Errorf("decode tool input for %s: %w", aws.ToString(v.Value.Name), err)
-			}
-			resp.ToolUses = append(resp.ToolUses, provider.ToolUse{
-				ID:    aws.ToString(v.Value.ToolUseId),
-				Name:  aws.ToString(v.Value.Name),
-				Input: input,
-			})
-		}
-	}
-	resp.Text = strings.Join(textParts, "\n")
-	return resp, nil
 }
 
 func documentToRaw(d document.Interface) (json.RawMessage, error) {
